@@ -14,40 +14,31 @@ Projet fil rouge de la formation DevOps : le jeu est volontairement simple (HTML
 
 ## Lancer le projet
 
-Prérequis : Docker, et un shell bash (Git Bash sous Windows). Pour l'instant tout se lance à la main, conteneur par conteneur (Compose arrive à l'étape 6).
+Prérequis : Docker avec Compose.
 
 ```bash
 git clone https://github.com/projets1700/ClickFast.git
 cd ClickFast
 
-# 0. La configuration : copier le modèle et y mettre un vrai mot de passe
+# La configuration : copier le modèle et y mettre un vrai mot de passe
 cp .env.example .env
 # ... éditer .env ...
-set -a; . ./.env; set +a   # charge les variables du .env dans le shell courant
 
-# 1. Le network privé de l'API et de la base, et le volume de la base
-docker network create clickfast-net
-docker volume create clickfast-pgdata
-
-# 2. La base : aucun port publié, elle n'est joignable que depuis clickfast-net
-docker run -d --name clickfast-db --network clickfast-net \
-  -e POSTGRES_USER="$DB_USER" -e POSTGRES_PASSWORD="$DB_PASSWORD" -e POSTGRES_DB="$DB_NAME" \
-  --mount source=clickfast-pgdata,target=/var/lib/postgresql \
-  postgres:18.6-alpine
-
-# 3. L'API de scores, qui lit toute sa config dans le .env
-docker build -t clickfast-api:1.1.0 ./api
-docker run -d --name clickfast-api --network clickfast-net --env-file .env \
-  -p 3000:3000 clickfast-api:1.1.0
-
-# 4. Le jeu, qui reçoit seulement l'URL de l'API (et pas les secrets de la base)
-docker build -t clickfast:1.2.0 .
-docker run -d --name clickfast -e API_URL -p 8080:80 clickfast:1.2.0
+# Toute la stack en une commande : jeu, API de scores, Postgres et Adminer
+docker compose up -d --build
+docker compose ps
 ```
 
-Si une variable obligatoire manque, l'API s'arrête au démarrage en la nommant : `docker logs clickfast-api`.
+| Service   | Adresse (ports par défaut du `.env.example`) |
+| --------- | -------------------------------------------- |
+| Le jeu    | http://localhost:8080                        |
+| L'API     | http://localhost:3000/scores                 |
+| Adminer   | http://localhost:8081 (système PostgreSQL, serveur `db`, identifiants du `.env`) |
+| Postgres  | non publié, joignable seulement depuis le network `clickfast-net` |
 
-Puis ouvrir http://localhost:8080. Pour tout arrêter : `docker rm -f clickfast clickfast-api clickfast-db` (le volume et donc les scores restent).
+Arrêter : `docker compose down` (le volume `clickfast-pgdata` et donc les scores restent). `docker compose down -v` supprime aussi le volume, et tous les scores avec.
+
+Si une variable obligatoire manque, l'API refuse de démarrer en la nommant : `docker compose logs api`.
 
 ## L'API de scores
 
@@ -72,6 +63,7 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `api/`          | L'API de scores (Express + PostgreSQL), avec son Dockerfile |
 | `docker/`       | Script de démarrage du jeu qui génère `config.js`           |
 | `.env.example`  | Modèle de configuration à copier en `.env` (jamais commité) |
+| `docker-compose.yml` | Toute la stack : jeu, API, Postgres, Adminer           |
 
 ## Journal de bord
 
@@ -156,3 +148,25 @@ Premier constat en commençant : le mot de passe de la base des étapes 3 et 4 �
 L'URL de l'API dans le front : le JavaScript est livré tel quel au navigateur, il ne peut pas lire de variable d'environnement. Écrite en dur dans `script.js`, elle obligerait à reconstruire l'image pour chaque environnement, et l'image testée ne serait plus celle déployée. Traitement retenu : un script `docker/40-clickfast-config.sh`, lancé par l'entrypoint de l'image nginx juste avant le démarrage, écrit `/tmp/config.js` à partir de `API_URL`, et nginx le sert sur `/config.js`. Il est dans `/tmp` car c'est le seul endroit inscriptible par l'utilisateur `nginx`, et ça laisse la racine servie intacte (`ls -a` montre toujours seulement les 3 fichiers). Vérifié : la même image `clickfast:1.2.0` lancée avec `-e API_URL=https://api.clickfast.example` sert ce `config.js`-là, sans rebuild. Le jeu ne reçoit que `API_URL`, pas le `.env` complet, pour que les secrets de la base n'arrivent pas dans un conteneur qui n'en a pas besoin. Ce que ça implique : l'URL est publique par nature, tout joueur la lit dans son navigateur. Elle ne doit donc jamais contenir de secret, et l'API doit se protéger elle-même (validation des scores) puisque n'importe qui peut l'appeler.
 
 Accroc évité : sous Windows, git peut convertir les fins de ligne en CRLF, et `sh` plante alors sur un script qui finit chaque ligne par `\r`. Un `.gitattributes` force `*.sh` en LF.
+
+### Étape 6 : toute la stack dans un fichier
+
+`docker compose up -d --build` démarre les 4 services : `front`, `api`, `db`, `adminer`. Tous sont sur `clickfast-net`, la base n'a aucun `ports`, et chaque valeur vient du `.env` par `${...}`. `docker compose config` montre le fichier final interpolé : pratique pour vérifier sans rien lancer. L'API attend la base avec `depends_on: condition: service_healthy`, et le healthcheck de la base est `pg_isready`.
+
+Ajustements de noms entre le manuel et Compose :
+- Services nommés `front`, `api`, `db`, `adminer`. Les conteneurs deviennent `clickfast-db-1` etc. (projet `clickfast` + service + numéro), au lieu des `clickfast-db` créés à la main.
+- `DB_HOST` passe de `clickfast-db` à `db` : dans Compose, le nom DNS d'un service est le nom du service. C'est aussi `db` qu'on tape comme serveur dans Adminer.
+- Network et volume gardent leurs noms grâce à `name: clickfast-net` et `name: clickfast-pgdata`. Sans ça, Compose les aurait préfixés (`clickfast_pgdata`) et serait reparti d'une base vide. Mais les objets créés à la main n'ont pas les étiquettes de Compose, qui râle dessus. Migration : sauvegarde du volume en `tar` avec un conteneur alpine (la méthode du cours), suppression des conteneurs, du network et du volume manuels, `docker compose create` pour que Compose crée les siens, restauration du `tar` dans le nouveau volume, puis `up`. Les 6 scores étaient bien là.
+- Variables ajoutées au `.env.example` : `FRONT_PORT`, `API_PORT`, `ADMINER_PORT`, pour qu'aucun port publié ne soit écrit en dur. Les ports internes (80, 3000, 8080) restent dans le fichier car ils sont fixés par les images, pas par l'environnement.
+
+Healthcheck : avec `interval: 2s`, le premier test réussi arrivait 5,0 s après le démarrage du conteneur, pile. Ce n'était pas Postgres : pendant `start_period`, Docker attend `start_interval`, 5 s par défaut, avant le premier test. Avec `start_interval: 1s`, Healthy arrive 1,9 à 2,3 s après le démarrage du conteneur, sans aucun test en échec avant. Vu depuis la commande `docker compose up`, il faut 14 à 15 s, mais la plus grosse part est la création du network et des conteneurs.
+
+`docker compose ps` : `front`, `api`, `adminer` en `running`, `db` en `running (healthy)`, et seule `db` a un port non publié (`5432/tcp`). Partie jouée avec la stack : 41 clics, score enregistré, classement affiché. Depuis l'hôte, `Test-NetConnection localhost -Port 5432` donne toujours `False`. Adminer propose `db` par défaut (grâce à `ADMINER_DEFAULT_SERVER`), et une fois connecté avec les valeurs du `.env`, il liste la table `scores`.
+
+Mot de passe commenté dans le `.env` : Compose prévient à chaque commande (`The "DB_PASSWORD" variable is not set. Defaulting to a blank string`) mais démarre quand même.
+- `db` démarre `healthy` sans broncher : le volume est déjà initialisé, et `POSTGRES_PASSWORD` n'est lu qu'à la création de la base. Vérifié à part : sur un volume neuf, Postgres refuse avec `Database is uninitialized and superuser password is not specified`.
+- `api` est le service qui refuse : `Variables d'environnement manquantes : DB_PASSWORD`. À cause de `restart: unless-stopped`, il reste en `Restarting (1)` et en était à 8 redémarrages au bout de 30 s. C'est voyant dans `docker compose ps`, mais c'est une boucle infinie : il faut lire les logs pour comprendre.
+- `front` et `adminer` démarrent normalement, ils n'utilisent pas le mot de passe. Le jeu s'affiche, mais n'arrive pas à joindre l'API.
+- Le message de l'API parlait encore de `--env-file` hérité de l'étape 5 : reformulé pour valoir aussi avec Compose. Ligne remise ensuite, tout repart.
+
+Postgres seul arrêté pendant que la stack tourne (`docker compose stop db`) : `docker compose ps` ne liste même plus `db` (il faut `-a`). L'API répond 503 `Base de données indisponible` en 3 s. Le joueur finit sa partie normalement, voit « Score final : 25. Non enregistré : Base de données indisponible » et « Classement indisponible », et peut rejouer. Après `docker compose start db`, l'API retrouve la base toute seule : 0 redémarrage, même heure de démarrage, et la partie suivante est enregistrée. Le pool `pg` rouvre simplement de nouvelles connexions, et le nom `db` résout la nouvelle adresse.
