@@ -8,7 +8,7 @@ const REQUIRED_ENV = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"];
 const missingEnv = REQUIRED_ENV.filter((name) => !process.env[name]);
 if (missingEnv.length > 0) {
   console.error(`Variables d'environnement manquantes : ${missingEnv.join(", ")}`);
-  console.error("Copier .env.example vers .env et le remplir, puis relancer avec --env-file .env");
+  console.error("Vérifier le .env (modèle : .env.example), puis relancer la stack");
   process.exit(1);
 }
 
