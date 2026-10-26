@@ -79,6 +79,27 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `stats-api/`    | Le service de stats en Python (FastAPI), avec son Dockerfile |
 | `docker-compose.yml` | Toute la stack : jeu, API, stats, Postgres, Adminer    |
 | `docker-compose.prod.yml` | La même stack depuis les images publiées sur Docker Hub |
+| `scripts/mesure.sh` | Mesure des images pour le tableau ci-dessous          |
+
+## Mesures des images
+
+Obtenues avec `scripts/mesure.sh` sur Docker Desktop (Windows). Build froid : cache de build vidé et `--no-cache`, image de base déjà téléchargée. Build chaud : le même build relancé juste après. 1re réponse : du `docker run` au premier HTTP 200, en interrogeant toutes les 100 ms. Taille : espace disque affiché par `docker images` (la taille compressée, celle qui transite au pull, est indiquée entre parenthèses).
+
+Première mesure, avant optimisation :
+
+| Image | Taille | Couches (poids max) | Build froid / chaud | Temps 1re réponse HTTP |
+| ----- | ------ | ------------------- | ------------------- | ---------------------- |
+| clickfast (le jeu) | 92,7 Mo (26,1 Mo) | 12 (51,8 Mo) | 34,3 s / 10,3 s | 5,4 s |
+| l'API de scores | 250 Mo (63,3 Mo) | 8 (167,0 Mo) | 40,3 s / 10,3 s | 5,6 s |
+| stats-api | 232 Mo (55,2 Mo) | 9 (87,7 Mo) | 57,4 s / 9,1 s | 7,8 s |
+
+Après optimisation (seule celle du jeu a été gardée, voir le journal de l'étape 9) :
+
+| Image | Taille | Couches (poids max) | Build froid / chaud | Temps 1re réponse HTTP |
+| ----- | ------ | ------------------- | ------------------- | ---------------------- |
+| clickfast (le jeu) | 20,6 Mo (5,8 Mo) | 11 (9,1 Mo) | 32,5 s / 10,3 s | 5,2 s |
+| l'API de scores | 250 Mo (63,3 Mo) | 8 (167,0 Mo) | 40,3 s / 10,3 s | 5,6 s |
+| stats-api | 232 Mo (55,2 Mo) | 9 (87,7 Mo) | 57,4 s / 9,1 s | 7,8 s |
 
 ## Journal de bord
 
@@ -223,3 +244,35 @@ Version explicite `1.0.0` partout : `docker tag arrow91/clickfast-api:1.0.0 arro
 `docker-compose.prod.yml` : copie de `docker-compose.yml` où les trois `build:` deviennent `image: arrow91/clickfast-…:1.0.0`. `diff` entre les deux fichiers : seulement ces lignes et le commentaire d'en-tête.
 
 Test du dossier vide : un dossier avec uniquement `docker-compose.prod.yml` et `.env`, et toutes les images ClickFast supprimées de la machine avant (anciennes versions manuelles comprises, car elles partagent des couches avec les nouvelles et auraient faussé le test), plus le cache de build vidé. `docker compose -f docker-compose.prod.yml up -d` télécharge les 3 images depuis Docker Hub, et la stack complète est `running` en 47 s, base `healthy`. Partie jouée : 44 clics enregistrés, classement à jour, `/stats` à 10 parties. `docker history` sur les images téléchargées : aucun mot de passe, aucun `ARG` ni `ENV` de secret.
+
+### Étape 9 : mesurer, puis optimiser
+
+Le tableau est dans la section « Mesures des images ». Tout est mesuré par `scripts/mesure.sh`, pour que chaque chiffre puisse être rejoué. Le temps de 1re réponse vient d'une boucle `curl` toutes les 100 ms après le `docker run`, jusqu'au premier 200.
+
+Trois pièges de mesure rencontrés, avant même d'optimiser :
+- Le build chaud de l'API sortait à 63,7 s, autant qu'à froid. Aucune étape n'était `CACHED` : une mesure précédente que j'avais interrompue tournait encore, et son `docker builder prune` vidait le cache en plein milieu. Mesures refaites ensuite, sans rien en parallèle.
+- Le premier build froid de stats-api comptait aussi le téléchargement de `python:3.14.9-slim`. Cette image n'existait que dans le cache de BuildKit, que `builder prune` vide, alors que les images de base des deux autres étaient dans les images locales. Une fois l'image tirée avec `docker pull`, son build froid passe de 65,1 s à 57,4 s.
+- Docker Desktop varie beaucoup : un `docker run` d'Alpine qui ne fait rien prend déjà plusieurs secondes. Les temps de démarrage du tableau (5 à 8 s) sont mesurés juste après des builds, sur une machine chargée. Pour comparer avant et après, j'ai donc relancé les images d'avant (`arrow91/*:1.0.0`) et d'après en alternance, 5 fois chacune, dans les mêmes conditions : médianes de 3 à 6 s.
+
+Cibles fixées après la première mesure, image par image :
+- Le jeu, cible sous 30 Mo : le site fait 3 fichiers de quelques ko, tout le reste est nginx. La variante `nginx:1.30.6-alpine-slim` est le même nginx sans les modules njs et acme, inutiles pour un site statique. Son image de base fait 5,7 Mo compressés.
+- L'API, cible 200 Mo : la plus grosse couche (167 Mo) est l'image node, qui contient npm (18 Mo), yarn (5 Mo) et des en-têtes C (6,6 Mo) qui ne servent qu'à installer. Seul le binaire `node` (126 Mo) sert à l'exécution.
+- stats-api, cible 130 Mo : `python:3.14.9-alpine` est 2 fois plus léger que `slim` (17,8 Mo compressés contre environ 40), et psycopg publie des wheels pour Alpine, donc rien à compiler.
+
+Résultats :
+- Le jeu : de 92,7 Mo à 20,6 Mo (26,1 à 5,8 Mo compressés, 4,5 fois moins à chaque pull), plus lourde couche de 51,8 à 9,1 Mo. Builds et démarrage inchangés (2,9 s contre 3,0 s en médiane sur 5 essais alternés). Cible atteinte, gardé.
+- L'API : image finale sur `alpine:3.24.3` (la même version que celle de l'image node), avec seulement `libstdc++` et le binaire `node` copié du premier stage. Résultat : 205 Mo, 54,4 Mo compressés, démarrage identique. Mais le build froid passe d'environ 41 s à environ 57 s (médianes sur 3 essais alternés). Deux raisons : `apk add` va chercher `libstdc++` sur le réseau (5,4 s), et la couche de 126 Mo du binaire, copiée dans une image neuve, doit être recompressée à chaque build alors qu'une couche de l'image de base est simplement réutilisée. Pour 9 Mo de moins à chaque pull, c'est +16 s par build froid, soit environ 13 minutes de calcul en plus par jour à 50 builds. Écarté, Dockerfile remis comme avant. Cible ratée, et c'est le bon choix.
+- stats-api : sur Alpine, 125 Mo (cible atteinte), mais le démarrage passe de 5,0 s à 5,9 s en médiane sur 5 essais alternés, et chaque essai Alpine est plus lent que son voisin `slim`. Python charge ses modules plus lentement avec la bibliothèque C d'Alpine (musl) qu'avec celle de Debian (glibc). La consigne dit qu'une optimisation qui fait régresser le démarrage n'est pas acquise : écarté, retour à `slim`.
+
+Les optimisations déjà en place depuis les étapes 2 et 3 sont restées : `COPY` des fichiers de dépendances avant le code (vérifié : après une modification du seul code, toutes les étapes d'installation sont `CACHED`), multi-stage de l'API sans les dépendances de dev, `.dockerignore` en liste blanche pour les trois images (aucun fichier inattendu trouvé).
+
+Les trois vérifications sur l'optimisation gardée (le jeu) :
+- Build froid qui aboutit après nettoyage : fait avec `docker builder prune -af` et `--no-cache`, et pas avec `docker system prune`. Ce dernier aurait aussi supprimé les conteneurs arrêtés, les réseaux et les images inutilisés de mes autres projets sur la machine. `builder prune` vide exactement ce qui rend un build froid : le cache de build.
+- Démarrage : pas de régression (voir plus haut).
+- Ni secret ni fichier de test : la racine servie ne contient que `index.html`, `script.js` et `style.css`, `find` ne trouve ni `.env`, ni `.git`, ni `*.test.js` dans l'image, et le mot de passe n'apparaît pas dans `docker history`.
+
+Jusqu'où descendre : j'ai arrêté le jeu à `alpine-slim`. L'étape d'après serait une image sans shell (distroless ou `scratch`), mais le script qui génère `config.js` au démarrage a besoin de `sh`, et un `docker exec … sh` ne serait plus possible pour dépanner. Pour 5,8 Mo compressés, il n'y a plus grand-chose à gagner.
+
+Le vrai coût d'un build froid à 50 builds par jour : 32,5 s × 50 = 27 minutes pour le jeu, 40,3 s × 50 = 34 minutes pour l'API, 57,4 s × 50 = 48 minutes pour stats-api. Soit presque 2 heures de calcul par jour si les trois images repartent de zéro à chaque fois, contre environ 25 minutes avec le cache (environ 10 s par build chaud). Le cache de build dans la pipeline vaut donc à lui seul 1 h 30 de calcul par jour.
+
+La stack complète a été relancée avec le jeu optimisé : partie à 39 clics enregistrée.
