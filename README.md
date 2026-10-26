@@ -14,11 +14,16 @@ Projet fil rouge de la formation DevOps : le jeu est volontairement simple (HTML
 
 ## Lancer le projet
 
-Prérequis : Docker. Pour l'instant tout se lance à la main, conteneur par conteneur (Compose arrive à l'étape 6).
+Prérequis : Docker, et un shell bash (Git Bash sous Windows). Pour l'instant tout se lance à la main, conteneur par conteneur (Compose arrive à l'étape 6).
 
 ```bash
 git clone https://github.com/projets1700/ClickFast.git
 cd ClickFast
+
+# 0. La configuration : copier le modèle et y mettre un vrai mot de passe
+cp .env.example .env
+# ... éditer .env ...
+set -a; . ./.env; set +a   # charge les variables du .env dans le shell courant
 
 # 1. Le network privé de l'API et de la base, et le volume de la base
 docker network create clickfast-net
@@ -26,20 +31,21 @@ docker volume create clickfast-pgdata
 
 # 2. La base : aucun port publié, elle n'est joignable que depuis clickfast-net
 docker run -d --name clickfast-db --network clickfast-net \
-  -e POSTGRES_USER=clickfast -e POSTGRES_PASSWORD=clickfast_pwd -e POSTGRES_DB=clickfast \
+  -e POSTGRES_USER="$DB_USER" -e POSTGRES_PASSWORD="$DB_PASSWORD" -e POSTGRES_DB="$DB_NAME" \
   --mount source=clickfast-pgdata,target=/var/lib/postgresql \
   postgres:18.6-alpine
 
-# 3. L'API de scores, qui joint la base par son nom de conteneur
-docker build -t clickfast-api:1.0.0 ./api
-docker run -d --name clickfast-api --network clickfast-net \
-  -e DB_HOST=clickfast-db -e DB_PORT=5432 -e DB_USER=clickfast -e DB_PASSWORD=clickfast_pwd -e DB_NAME=clickfast \
-  -p 3000:3000 clickfast-api:1.0.0
+# 3. L'API de scores, qui lit toute sa config dans le .env
+docker build -t clickfast-api:1.1.0 ./api
+docker run -d --name clickfast-api --network clickfast-net --env-file .env \
+  -p 3000:3000 clickfast-api:1.1.0
 
-# 4. Le jeu
-docker build -t clickfast:1.1.0 .
-docker run -d --name clickfast -p 8080:80 clickfast:1.1.0
+# 4. Le jeu, qui reçoit seulement l'URL de l'API (et pas les secrets de la base)
+docker build -t clickfast:1.2.0 .
+docker run -d --name clickfast -e API_URL -p 8080:80 clickfast:1.2.0
 ```
+
+Si une variable obligatoire manque, l'API s'arrête au démarrage en la nommant : `docker logs clickfast-api`.
 
 Puis ouvrir http://localhost:8080. Pour tout arrêter : `docker rm -f clickfast clickfast-api clickfast-db` (le volume et donc les scores restent).
 
@@ -64,6 +70,8 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `nginx.conf`    | La config nginx adaptée à un process sans root              |
 | `.dockerignore` | Liste blanche des seuls fichiers envoyés au build           |
 | `api/`          | L'API de scores (Express + PostgreSQL), avec son Dockerfile |
+| `docker/`       | Script de démarrage du jeu qui génère `config.js`           |
+| `.env.example`  | Modèle de configuration à copier en `.env` (jamais commité) |
 
 ## Journal de bord
 
@@ -100,11 +108,11 @@ API Express avec deux routes (`POST /scores`, `GET /scores`) et une table `score
 Lancement de la base à la main, avec `postgres:18.6-alpine`. Accroc : depuis Postgres 18, le volume se monte sur `/var/lib/postgresql` et non plus sur `/var/lib/postgresql/data` comme dans la plupart des exemples en ligne.
 
 ```bash
-docker run -d --name clickfast-db -e POSTGRES_USER=clickfast -e POSTGRES_PASSWORD=clickfast_pwd -e POSTGRES_DB=clickfast --mount source=clickfast-pgdata,target=/var/lib/postgresql -p 5432:5432 postgres:18.6-alpine
-docker run -d --name clickfast-api -e DB_HOST=172.17.0.2 -e DB_PORT=5432 -e DB_USER=clickfast -e DB_PASSWORD=clickfast_pwd -e DB_NAME=clickfast -p 3000:3000 clickfast-api:1.0.0
+docker run -d --name clickfast-db -e POSTGRES_USER=clickfast -e POSTGRES_PASSWORD=<ancien mot de passe> -e POSTGRES_DB=clickfast --mount source=clickfast-pgdata,target=/var/lib/postgresql -p 5432:5432 postgres:18.6-alpine
+docker run -d --name clickfast-api -e DB_HOST=172.17.0.2 -e DB_PORT=5432 -e DB_USER=clickfast -e DB_PASSWORD=<ancien mot de passe> -e DB_NAME=clickfast -p 3000:3000 clickfast-api:1.0.0
 ```
 
-IP interne utilisée : `172.17.0.2`, trouvée avec `docker network inspect bridge`. Étapes manuelles pour lancer la stack : 8 commandes (création du volume, run de la base, attente qu'elle soit prête, inspection du bridge pour l'IP, build et run de l'API, build et run du jeu), dont deux `docker run` à 6 et 7 options. Les identifiants sont en clair dans les commandes : c'est l'étape 5 qui les sort.
+IP interne utilisée : `172.17.0.2`, trouvée avec `docker network inspect bridge`. Étapes manuelles pour lancer la stack : 8 commandes (création du volume, run de la base, attente qu'elle soit prête, inspection du bridge pour l'IP, build et run de l'API, build et run du jeu), dont deux `docker run` à 6 et 7 options. Les identifiants étaient en clair dans ces commandes (masqués ici après coup, voir l'étape 5).
 
 Persistance :
 - `docker stop` puis `docker start` de la base : les 3 scores sont toujours là.
@@ -134,3 +142,17 @@ TcpClient localhost:3000                  ->  connexion ouverte (témoin : l'API
 Le jeu fonctionne toujours de bout en bout : partie à 33 clics, score enregistré, classement mis à jour.
 
 Ce que le network custom règle par rapport à l'étape 3 : après un `docker restart` de la base, puis après un `docker rm` et un `docker run` neuf qui lui donne une autre IP (`172.19.0.4`), l'API répond 200 sans être relancée, puisqu'elle cherche un nom et plus une adresse. Il reste 8 commandes manuelles pour lancer la stack : `docker network create` prend la place de la recherche d'IP, et les relances de l'API à chaque changement d'IP disparaissent.
+
+### Étape 5 : la configuration sort du code
+
+Premier constat en commençant : le mot de passe de la base des étapes 3 et 4 était écrit en clair dans les commandes du README, donc poussé sur un repo public. Le supprimer du fichier ne suffit pas, il reste dans l'historique git pour toujours : il est considéré comme mort. Un nouveau mot de passe aléatoire de 32 caractères a été généré dans le `.env`, puis appliqué à la base avec `ALTER USER` (le volume existait déjà, et `POSTGRES_PASSWORD` n'est lu qu'à la toute première initialisation). Vérifié : l'ancien donne `password authentication failed`, le nouveau lit bien les 5 scores. Dans le journal de l'étape 3, l'ancien est remplacé par `<ancien mot de passe>`.
+
+- `.env` (vraies valeurs) ajouté au `.gitignore`, vérifié avec `git check-ignore -v .env`. `git log --all -- .env` ne renvoie rien, et `git grep` ne trouve le nouveau mot de passe dans aucun fichier suivi.
+- `.env.example` commité, mêmes clés avec des valeurs bidons (`DB_PASSWORD=change_moi`).
+- Noms retenus : `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` pour l'API, plus `API_URL` pour le jeu. L'image Postgres attend `POSTGRES_USER` etc., donc la commande de la base fait le pont : `-e POSTGRES_PASSWORD="$DB_PASSWORD"`, après `set -a; . ./.env; set +a`. Aucune valeur n'est écrite dans la commande.
+- L'API est lancée avec `--env-file .env`. Si `DB_HOST`, `DB_USER`, `DB_PASSWORD` ou `DB_NAME` manque, elle s'arrête tout de suite : `Variables d'environnement manquantes : DB_PASSWORD`, code de sortie 1, conteneur `Exited (1)`. Avant, elle aurait démarré, puis échoué à la première requête avec une erreur d'authentification beaucoup moins claire.
+- Limite qui reste : `docker inspect clickfast-api` affiche toujours `DB_PASSWORD` en clair, c'est le propre d'une variable d'environnement. Les secrets Docker (`POSTGRES_PASSWORD_FILE`) régleraient ça. En revanche `docker history` des deux images ne contient aucun mot de passe : rien n'est passé en `ARG` ni en `ENV` au build.
+
+L'URL de l'API dans le front : le JavaScript est livré tel quel au navigateur, il ne peut pas lire de variable d'environnement. Écrite en dur dans `script.js`, elle obligerait à reconstruire l'image pour chaque environnement, et l'image testée ne serait plus celle déployée. Traitement retenu : un script `docker/40-clickfast-config.sh`, lancé par l'entrypoint de l'image nginx juste avant le démarrage, écrit `/tmp/config.js` à partir de `API_URL`, et nginx le sert sur `/config.js`. Il est dans `/tmp` car c'est le seul endroit inscriptible par l'utilisateur `nginx`, et ça laisse la racine servie intacte (`ls -a` montre toujours seulement les 3 fichiers). Vérifié : la même image `clickfast:1.2.0` lancée avec `-e API_URL=https://api.clickfast.example` sert ce `config.js`-là, sans rebuild. Le jeu ne reçoit que `API_URL`, pas le `.env` complet, pour que les secrets de la base n'arrivent pas dans un conteneur qui n'en a pas besoin. Ce que ça implique : l'URL est publique par nature, tout joueur la lit dans son navigateur. Elle ne doit donc jamais contenir de secret, et l'API doit se protéger elle-même (validation des scores) puisque n'importe qui peut l'appeler.
+
+Accroc évité : sous Windows, git peut convertir les fins de ligne en CRLF, et `sh` plante alors sur un script qui finit chaque ligne par `\r`. Un `.gitattributes` force `*.sh` en LF.
