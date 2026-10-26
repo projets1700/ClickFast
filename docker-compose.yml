@@ -1,0 +1,84 @@
+# Toute la stack ClickFast : docker compose up -d --build
+# Aucune valeur en dur : tout vient du .env (copié depuis .env.example) par interpolation ${...}.
+name: clickfast
+
+services:
+  # Le jeu, servi par nginx (le navigateur joint l'API par le port publié sur l'hôte)
+  front:
+    build: .
+    image: clickfast-front:local
+    environment:
+      API_URL: ${API_URL}
+    ports:
+      - "${FRONT_PORT}:80"
+    networks:
+      - clickfast-net
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # L'API de scores
+  api:
+    build: ./api
+    image: clickfast-api:local
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    ports:
+      - "${API_PORT}:3000"
+    networks:
+      - clickfast-net
+    depends_on:
+      # Démarre seulement quand Postgres accepte vraiment les connexions, pas juste quand le conteneur existe
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # La base : aucun "ports", elle n'est joignable que depuis clickfast-net
+  db:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      # Depuis Postgres 18, les données sont sous /var/lib/postgresql (et plus .../data)
+      - pgdata:/var/lib/postgresql
+    networks:
+      - clickfast-net
+    healthcheck:
+      # $$ : la variable est lue dans le conteneur, pas interpolée par Compose
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+      # Pendant start_period, teste toutes les secondes (sinon le 1er test n'arrive qu'après 5 s)
+      start_interval: 1s
+    restart: unless-stopped
+
+  # Interface web pour regarder le contenu de la base
+  adminer:
+    image: adminer:6.1.2-standalone
+    environment:
+      # Le serveur proposé par défaut est le nom du service Postgres
+      ADMINER_DEFAULT_SERVER: ${DB_HOST}
+    ports:
+      - "${ADMINER_PORT}:8080"
+    networks:
+      - clickfast-net
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  clickfast-net:
+    name: clickfast-net
+
+volumes:
+  pgdata:
+    name: clickfast-pgdata
