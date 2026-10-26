@@ -1,0 +1,4 @@
+# Liste blanche, comme pour les autres images
+*
+!requirements.txt
+!main.py
