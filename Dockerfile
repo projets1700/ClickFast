@@ -8,6 +8,9 @@ RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 # Config qui place le PID et les fichiers temporaires dans /tmp, pour tourner sans root
 COPY nginx.conf /etc/nginx/nginx.conf
 
+# Script lancé par l'entrypoint nginx : génère config.js depuis la variable API_URL
+COPY --chmod=755 docker/40-clickfast-config.sh /docker-entrypoint.d/
+
 # Copie explicite des seuls fichiers du site, rien d'autre
 COPY index.html style.css script.js /usr/share/nginx/html/
 

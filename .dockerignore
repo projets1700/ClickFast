@@ -5,3 +5,4 @@
 !style.css
 !script.js
 !nginx.conf
+!docker/40-clickfast-config.sh
