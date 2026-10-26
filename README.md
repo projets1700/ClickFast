@@ -20,20 +20,20 @@ Prérequis : Docker. Pour l'instant tout se lance à la main, conteneur par cont
 git clone https://github.com/projets1700/ClickFast.git
 cd ClickFast
 
-# 1. La base, avec son volume nommé
+# 1. Le network privé de l'API et de la base, et le volume de la base
+docker network create clickfast-net
 docker volume create clickfast-pgdata
-docker run -d --name clickfast-db \
+
+# 2. La base : aucun port publié, elle n'est joignable que depuis clickfast-net
+docker run -d --name clickfast-db --network clickfast-net \
   -e POSTGRES_USER=clickfast -e POSTGRES_PASSWORD=clickfast_pwd -e POSTGRES_DB=clickfast \
   --mount source=clickfast-pgdata,target=/var/lib/postgresql \
-  -p 5432:5432 postgres:18.6-alpine
+  postgres:18.6-alpine
 
-# 2. Récupérer l'IP interne de la base sur le bridge par défaut
-docker network inspect bridge --format '{{range .Containers}}{{.Name}} {{.IPv4Address}}{{"\n"}}{{end}}'
-
-# 3. L'API de scores, en remplaçant 172.17.0.2 par l'IP trouvée
+# 3. L'API de scores, qui joint la base par son nom de conteneur
 docker build -t clickfast-api:1.0.0 ./api
-docker run -d --name clickfast-api \
-  -e DB_HOST=172.17.0.2 -e DB_PORT=5432 -e DB_USER=clickfast -e DB_PASSWORD=clickfast_pwd -e DB_NAME=clickfast \
+docker run -d --name clickfast-api --network clickfast-net \
+  -e DB_HOST=clickfast-db -e DB_PORT=5432 -e DB_USER=clickfast -e DB_PASSWORD=clickfast_pwd -e DB_NAME=clickfast \
   -p 3000:3000 clickfast-api:1.0.0
 
 # 4. Le jeu
@@ -114,3 +114,23 @@ Persistance :
 `docker kill` sur Postgres pendant une rafale d'envois : le score envoyé avant le kill est enregistré (201), tous ceux d'après reçoivent un 503 `{"error":"Base de données indisponible, réessaie dans un instant"}` en 3 secondes maximum, et le conteneur de l'API reste `Up`. Deux réglages rendent ça possible : un `connectionTimeoutMillis` de 3 s (sans lui, la requête pendait), et un écouteur `pool.on("error")` (sans lui, une connexion cassée fait planter le process Node). Côté jeu, le `fetch` a aussi son propre délai de 5 s : la partie se termine normalement, le statut affiche « Score final : 20. Non enregistré : Base de données indisponible », et on peut rejouer.
 
 Après `docker start` de la base tuée, elle est revenue avec encore une autre IP (`172.17.0.3`) : l'API ne la retrouve pas seule et réclame d'être relancée. C'est exactement la limite du bridge par défaut que l'étape 4 corrige.
+
+### Étape 4 : le réseau isolé
+
+```bash
+docker network create clickfast-net
+```
+
+Nom retenu : `clickfast-net`, préfixé comme tous les objets du projet (`clickfast-db`, `clickfast-pgdata`…) pour les repérer d'un coup d'œil dans `docker network ls`. La base et l'API sont relancées dessus avec `--network clickfast-net`, sur le même volume (les 4 scores existants sont toujours là). L'API utilise maintenant `DB_HOST=clickfast-db` au lieu d'une IP : aucune ligne de code n'a changé, seulement la variable. `docker exec clickfast-api getent hosts clickfast-db` répond `172.19.0.2`, c'est le DNS interne du network custom qui résout le nom.
+
+Le `-p 5432:5432` a disparu de la commande de la base : `docker ps` n'affiche plus que `5432/tcp` pour elle, au lieu de `0.0.0.0:5432->5432/tcp`. Depuis l'hôte, `nc` n'existe pas sous Windows, donc test fait avec PowerShell :
+
+```
+Test-NetConnection localhost -Port 5432   ->  TcpTestSucceeded : False
+TcpClient localhost:5432                  ->  Aucune connexion n'a pu être établie car l'ordinateur cible l'a expressément refusée 127.0.0.1:5432
+TcpClient localhost:3000                  ->  connexion ouverte (témoin : l'API, elle, est publiée)
+```
+
+Le jeu fonctionne toujours de bout en bout : partie à 33 clics, score enregistré, classement mis à jour.
+
+Ce que le network custom règle par rapport à l'étape 3 : après un `docker restart` de la base, puis après un `docker rm` et un `docker run` neuf qui lui donne une autre IP (`172.19.0.4`), l'API répond 200 sans être relancée, puisqu'elle cherche un nom et plus une adresse. Il reste 9 commandes manuelles pour lancer la stack (une de plus avec `docker network create`, mais la recherche d'IP et les relances de l'API disparaissent).
