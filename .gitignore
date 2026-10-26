@@ -1,1 +1,4 @@
 node_modules/
+
+# Vraies valeurs de configuration et secrets : jamais dans git (le modèle est .env.example)
+.env
