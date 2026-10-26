@@ -16,6 +16,11 @@
         <p class="catchphrase">Sois le plus rapide des clickers du game ⚡</p>
 
         <div class="flex-center">
+          <label for="username">Pseudo :&nbsp;</label>
+          <input id="username" type="text" maxlength="30" placeholder="Ton pseudo" />
+        </div>
+
+        <div class="flex-center">
           <div id="score" class="number">0</div>
         </div>
 
@@ -29,6 +34,12 @@
         <div class="flex-center">
           <button id="button-restart" type="button" hidden>Rejouer</button>
         </div>
+
+        <section id="leaderboard">
+          <h2 class="flex-center">Classement</h2>
+          <p id="leaderboard-message" class="flex-center">Chargement…</p>
+          <ol id="leaderboard-list"></ol>
+        </section>
       </div>
     </div>
 

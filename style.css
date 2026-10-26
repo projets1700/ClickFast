@@ -30,6 +30,26 @@ h1 {
   }
 }
 
+#username {
+  font-size: 1.2rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid lightgray;
+}
+
+#leaderboard {
+  margin-top: 3rem;
+}
+
+#leaderboard-list {
+  width: fit-content;
+  margin: 0 auto;
+}
+
+.error {
+  color: crimson;
+}
+
 #button-restart {
   margin-top: 2rem;
   padding: 0.5rem 1rem;
