@@ -34,6 +34,7 @@ docker compose ps
 | Le jeu    | http://localhost:8080                        |
 | L'API     | http://localhost:3000/scores                 |
 | Adminer   | http://localhost:8081 (système PostgreSQL, serveur `db`, identifiants du `.env`) |
+| Les stats | http://localhost:8000/stats                  |
 | Postgres  | non publié, joignable seulement depuis le network `clickfast-net` |
 
 Arrêter : `docker compose down` (le volume `clickfast-pgdata` et donc les scores restent). `docker compose down -v` supprime aussi le volume, et tous les scores avec.
@@ -50,6 +51,10 @@ Si une variable obligatoire manque, l'API refuse de démarrer en la nommant : `d
 
 Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier entre 0 et 200, ou un JSON cassé donnent un 400 avec le détail. Base injoignable : 503 avec un message, jamais de stacktrace.
 
+## Le service de stats
+
+`GET /stats` sur le port 8000 renvoie `{ "best_score": 55, "games_played": 8, "distinct_players": 8 }`. Aucune partie : 200 avec des zéros. Base injoignable : 503 avec un message.
+
 ## Structure
 
 | Fichier         | Rôle                                                        |
@@ -63,7 +68,8 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `api/`          | L'API de scores (Express + PostgreSQL), avec son Dockerfile |
 | `docker/`       | Script de démarrage du jeu qui génère `config.js`           |
 | `.env.example`  | Modèle de configuration à copier en `.env` (jamais commité) |
-| `docker-compose.yml` | Toute la stack : jeu, API, Postgres, Adminer           |
+| `stats-api/`    | Le service de stats en Python (FastAPI), avec son Dockerfile |
+| `docker-compose.yml` | Toute la stack : jeu, API, stats, Postgres, Adminer    |
 
 ## Journal de bord
 
@@ -170,3 +176,17 @@ Mot de passe commenté dans le `.env` : Compose prévient à chaque commande (`T
 - Le message de l'API parlait encore de `--env-file` hérité de l'étape 5 : reformulé pour valoir aussi avec Compose. Ligne remise ensuite, tout repart.
 
 Postgres seul arrêté pendant que la stack tourne (`docker compose stop db`) : `docker compose ps` ne liste même plus `db` (il faut `-a`). L'API répond 503 `Base de données indisponible` en 3 s. Le joueur finit sa partie normalement, voit « Score final : 25. Non enregistré : Base de données indisponible » et « Classement indisponible », et peut rejouer. Après `docker compose start db`, l'API retrouve la base toute seule : 0 redémarrage, même heure de démarrage, et la partie suivante est enregistrée. Le pool `pg` rouvre simplement de nouvelles connexions, et le nom `db` résout la nouvelle adresse.
+
+### Étape 7 : le service de stats, en Python
+
+Le code Python annoncé comme fourni n'était ni dans les PDF ni dans le repo du prof (aucun `.py`, toutes branches comprises). J'ai donc écrit un service équivalent dans `stats-api/` (FastAPI + psycopg 3) plutôt que de bloquer l'étape : à remplacer par le code officiel dès que je l'ai, le Dockerfile et le service Compose resteraient les mêmes.
+
+- Constantes en haut de `main.py` alignées sur le schéma de l'étape 3 : `TABLE_NAME = "scores"`, `COLUMN_USERNAME = "username"`, `COLUMN_SCORE = "score"`.
+- Variables lues : exactement celles de l'étape 5 (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`). Vérifié avec un environnement qui parle de `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` : le service refuse de démarrer, `Variables d'environnement manquantes : DB_USER, DB_PASSWORD, DB_NAME`, code 1. Il échoue au démarrage plutôt qu'au premier appel, c'est encore plus franc.
+- Image `python:3.14.9-slim`, versions figées dans `requirements.txt` (`fastapi==0.162.0`, `uvicorn==0.54.0`, `psycopg[binary]==3.3.6`) puisque pip n'a pas de lock file comme `npm ci`. `PYTHONUNBUFFERED=1` pour que les logs sortent dans `docker compose logs`, `pip install --no-cache-dir`, utilisateur `stats` (`whoami` répond `stats`), `.dockerignore` en liste blanche : `/app` ne contient que `main.py` et `requirements.txt`. Image de 232 Mo. Le premier build a pris 80 s, surtout le téléchargement de l'image Python et des paquets.
+- Service `stats-api` dans le compose, construit depuis son dossier, sur `clickfast-net`, port publié `${STATS_PORT}` (variable ajoutée au `.env.example`, 8000 par défaut). `docker network inspect clickfast-net` liste bien les 5 conteneurs côte à côte : `adminer` `.5`, `db` `.2`, `api` `.3`, `front` `.4`, `stats-api` `.6`.
+
+Vérifications :
+- Chiffres contre la base : `/stats` renvoie `{"best_score":55,"games_played":8,"distinct_players":8}`, et `SELECT MAX(score), COUNT(*), COUNT(DISTINCT username) FROM scores` donne `55|8|8`.
+- Table vide, sur une base jetable : 200 avec `0, 0, 0`. Même résultat quand la table n'existe pas encore (l'API ne l'a pas créée) : aucune partie jouée n'est pas une erreur. Sans `COALESCE`, `MAX` d'une table vide aurait renvoyé `null` et pas 0.
+- Base arrêtée (`docker compose stop db`) puis tuée (`docker kill`) : 503 `{"error":"Base de données indisponible, réessaie dans un instant"}` en 4 s, aucun stacktrace côté client, et le service reste `Up`. Le détail est dans les logs du service : `failed to resolve host 'db'`. Les 4 s ne viennent pas du `connect_timeout=3` : le conteneur n'existant plus sur le network, c'est la résolution DNS du nom `db` qui échoue. Une fois la base relancée, les stats reviennent sans redémarrer le service, puisqu'il ouvre une connexion à chaque appel.
