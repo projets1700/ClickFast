@@ -41,6 +41,14 @@ Arrêter : `docker compose down` (le volume `clickfast-pgdata` et donc les score
 
 Si une variable obligatoire manque, l'API refuse de démarrer en la nommant : `docker compose logs api`.
 
+### Sans le code source, depuis les images publiées
+
+Les images sont sur Docker Hub : `arrow91/clickfast-front`, `arrow91/clickfast-api`, `arrow91/clickfast-stats-api`, en version `1.0.0`. Dans un dossier qui ne contient que `docker-compose.prod.yml` et un `.env` rempli depuis `.env.example` :
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
 ## L'API de scores
 
 | Route          | Rôle                                                         |
@@ -70,6 +78,7 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `.env.example`  | Modèle de configuration à copier en `.env` (jamais commité) |
 | `stats-api/`    | Le service de stats en Python (FastAPI), avec son Dockerfile |
 | `docker-compose.yml` | Toute la stack : jeu, API, stats, Postgres, Adminer    |
+| `docker-compose.prod.yml` | La même stack depuis les images publiées sur Docker Hub |
 
 ## Journal de bord
 
@@ -190,3 +199,27 @@ Vérifications :
 - Chiffres contre la base : `/stats` renvoie `{"best_score":55,"games_played":8,"distinct_players":8}`, et `SELECT MAX(score), COUNT(*), COUNT(DISTINCT username) FROM scores` donne `55|8|8`.
 - Table vide, sur une base jetable : 200 avec `0, 0, 0`. Même résultat quand la table n'existe pas encore (l'API ne l'a pas créée) : aucune partie jouée n'est pas une erreur. Sans `COALESCE`, `MAX` d'une table vide aurait renvoyé `null` et pas 0.
 - Base arrêtée (`docker compose stop db`) puis tuée (`docker kill`) : 503 `{"error":"Base de données indisponible, réessaie dans un instant"}` en 4 s, aucun stacktrace côté client, et le service reste `Up`. Le détail est dans les logs du service : `failed to resolve host 'db'`. Les 4 s ne viennent pas du `connect_timeout=3` : le conteneur n'existant plus sur le network, c'est la résolution DNS du nom `db` qui échoue. Une fois la base relancée, les stats reviennent sans redémarrer le service, puisqu'il ouvre une connexion à chaque appel.
+
+### Étape 8 : publier, puis redéployer depuis le registry
+
+Connexion déjà faite dans Docker Desktop (compte `arrow91`). Avant de publier, contrôle des 3 images : le vrai mot de passe n'apparaît ni dans `docker history --no-trunc` ni dans les variables d'environnement des images. Une seule alerte sur les mots `password|secret|token|.env`, et c'était une fausse alerte : le script `15-local-resolvers.envsh` de l'image nginx officielle.
+
+Séquence tapée à la main, celle que la pipeline rejouera demain :
+
+```bash
+docker compose build
+docker tag clickfast-front:local     arrow91/clickfast-front:1.0.0
+docker tag clickfast-api:local       arrow91/clickfast-api:1.0.0
+docker tag clickfast-stats-api:local arrow91/clickfast-stats-api:1.0.0
+docker push arrow91/clickfast-front:1.0.0
+docker push arrow91/clickfast-api:1.0.0
+docker push arrow91/clickfast-stats-api:1.0.0
+```
+
+Digests publiés : front `sha256:9b4eac848eb9…`, api `sha256:f821f5c00742…`, stats-api `sha256:c4eec141c8d5…`. Accroc : un premier essai de push n'avait rien envoyé, et je l'ai vu parce que `docker buildx imagetools inspect arrow91/clickfast-front:1.0.0` répondait `not found`. Un push se vérifie côté registry, pas seulement dans son terminal.
+
+Version explicite `1.0.0` partout : `docker tag arrow91/clickfast-api:1.0.0 arrow91/clickfast-api`, sans tag, crée bien `arrow91/clickfast-api:latest`. Poussé, ce `latest` écraserait sans prévenir celui qu'un autre utilise. Tag local supprimé, jamais poussé.
+
+`docker-compose.prod.yml` : copie de `docker-compose.yml` où les trois `build:` deviennent `image: arrow91/clickfast-…:1.0.0`. `diff` entre les deux fichiers : seulement ces lignes et le commentaire d'en-tête.
+
+Test du dossier vide : un dossier avec uniquement `docker-compose.prod.yml` et `.env`, et toutes les images ClickFast supprimées de la machine avant (anciennes versions manuelles comprises, car elles partagent des couches avec les nouvelles et auraient faussé le test), plus le cache de build vidé. `docker compose -f docker-compose.prod.yml up -d` télécharge les 3 images depuis Docker Hub, et la stack complète est `running` en 47 s, base `healthy`. Partie jouée : 44 clics enregistrés, classement à jour, `/stats` à 10 parties. `docker history` sur les images téléchargées : aucun mot de passe, aucun `ARG` ni `ENV` de secret.
