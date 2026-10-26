@@ -108,8 +108,15 @@ app.use((err, req, res, next) => {
   if (err.type === "entity.parse.failed") {
     return res.status(400).json({ error: "JSON invalide" });
   }
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({ error: "Requête trop volumineuse" });
+  }
+  // Toute autre erreur du client détectée par Express (encodage, type de contenu...) garde son code 4xx
+  if (err.status >= 400 && err.status < 500) {
+    return res.status(err.status).json({ error: "Requête invalide" });
+  }
   console.error("Erreur :", err.message);
-  // Les seules requêtes qui peuvent échouer ici sont celles vers la base
+  // Le reste vient des requêtes vers la base
   res.status(503).json({ error: "Base de données indisponible, réessaie dans un instant" });
 });
 
