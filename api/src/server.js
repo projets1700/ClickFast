@@ -2,6 +2,16 @@ const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
 
+// Vérification au démarrage : une variable manquante arrête tout de suite le process
+// avec un message clair, au lieu d'un undefined qui casse plus loin à la première requête
+const REQUIRED_ENV = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"];
+const missingEnv = REQUIRED_ENV.filter((name) => !process.env[name]);
+if (missingEnv.length > 0) {
+  console.error(`Variables d'environnement manquantes : ${missingEnv.join(", ")}`);
+  console.error("Copier .env.example vers .env et le remplir, puis relancer avec --env-file .env");
+  process.exit(1);
+}
+
 const PORT = Number(process.env.PORT) || 3000;
 
 // Score maximal accepté : en 5 secondes, même un clic toutes les 25 ms ne dépasse pas 200
