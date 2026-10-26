@@ -133,4 +133,4 @@ TcpClient localhost:3000                  ->  connexion ouverte (témoin : l'API
 
 Le jeu fonctionne toujours de bout en bout : partie à 33 clics, score enregistré, classement mis à jour.
 
-Ce que le network custom règle par rapport à l'étape 3 : après un `docker restart` de la base, puis après un `docker rm` et un `docker run` neuf qui lui donne une autre IP (`172.19.0.4`), l'API répond 200 sans être relancée, puisqu'elle cherche un nom et plus une adresse. Il reste 9 commandes manuelles pour lancer la stack (une de plus avec `docker network create`, mais la recherche d'IP et les relances de l'API disparaissent).
+Ce que le network custom règle par rapport à l'étape 3 : après un `docker restart` de la base, puis après un `docker rm` et un `docker run` neuf qui lui donne une autre IP (`172.19.0.4`), l'API répond 200 sans être relancée, puisqu'elle cherche un nom et plus une adresse. Il reste 8 commandes manuelles pour lancer la stack : `docker network create` prend la place de la recherche d'IP, et les relances de l'API à chaque changement d'IP disparaissent.
