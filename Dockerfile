@@ -1,5 +1,6 @@
-# Version précise, jamais latest : le même Dockerfile donne la même image demain
-FROM nginx:1.30.6-alpine
+# Version précise, jamais latest : le même Dockerfile donne la même image demain.
+# Variante alpine-slim : même nginx, sans les modules njs/acme dont un site statique n'a pas besoin
+FROM nginx:1.30.6-alpine-slim
 
 # On vide la racine servie : l'image de base y laisse index.html et 50x.html par défaut.
 # On retire aussi le server par défaut, remplacé par notre nginx.conf.
