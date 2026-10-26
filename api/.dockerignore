@@ -1,0 +1,5 @@
+# Liste blanche, comme pour l'image du jeu
+*
+!package.json
+!package-lock.json
+!src/
