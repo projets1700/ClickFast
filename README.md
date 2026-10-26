@@ -57,7 +57,7 @@ docker compose -f docker-compose.prod.yml up -d
 | `GET /scores`  | Renvoie les 10 meilleurs scores                              |
 | `GET /health`  | Renvoie `{ "status": "ok" }`                                 |
 
-Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier entre 0 et 200, ou un JSON cassé donnent un 400 avec le détail. Base injoignable : 503 avec un message, jamais de stacktrace.
+Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier entre 0 et 200, ou un JSON cassé donnent un 400 avec le détail. Un corps de plus de 1 ko donne un 413. Base injoignable : 503 avec un message, jamais de stacktrace.
 
 ## Le service de stats
 
@@ -276,3 +276,20 @@ Jusqu'où descendre : j'ai arrêté le jeu à `alpine-slim`. L'étape d'après s
 Le vrai coût d'un build froid à 50 builds par jour : 32,5 s × 50 = 27 minutes pour le jeu, 40,3 s × 50 = 34 minutes pour l'API, 57,4 s × 50 = 48 minutes pour stats-api. Soit presque 2 heures de calcul par jour si les trois images repartent de zéro à chaque fois, contre environ 25 minutes avec le cache (environ 10 s par build chaud). Le cache de build dans la pipeline vaut donc à lui seul 1 h 30 de calcul par jour.
 
 La stack complète a été relancée avec le jeu optimisé : partie à 39 clics enregistrée.
+
+### Étape 10 : le test qui rejoue toute la journée
+
+Dossier neuf avec uniquement `docker-compose.prod.yml` et un `.env` reconstruit depuis `.env.example` (mêmes clés, vérifié avec un `diff`). Les images `arrow91/*` ont été supprimées de la machine avant. `docker compose -f docker-compose.prod.yml up -d` les télécharge depuis Docker Hub, et la stack est `running` en 42 s, base `healthy`.
+
+Piège noté en préparant le `.env` : le fichier prod fixe le nom du volume (`clickfast-pgdata`). Sur une machine qui a déjà ce volume, un `.env` avec un autre mot de passe ne marche pas : la base est déjà initialisée avec l'ancien, et `POSTGRES_PASSWORD` n'est plus lu. J'ai rempli le `.env` avec les vraies valeurs plutôt que d'effacer les scores pour simuler une machine vierge.
+
+1. Partie jouée jusqu'au bout, avec le `script.js` réellement servi par l'image publiée (identique octet par octet à celui du repo) : 47 clics, score enregistré, classement affiché.
+2. Scores invalides, tous refusés par un 400 avec le détail : champ manquant (`username` ou `score`), objet vide, score négatif, score de 999 999 999, score décimal (3.5), score en texte (`"42"`), pseudo fait d'espaces, pseudo de 100 caractères, JSON cassé. L'API reste debout, 0 redémarrage, jamais de stacktrace. Un pseudo `<script>alert(1)</script>` est accepté (201) : c'est un pseudo valide de moins de 30 caractères, et le jeu l'affiche avec `textContent`, donc comme du texte et jamais comme du HTML.
+   **Bug trouvé** : un corps de 5 ko (au-delà de la limite de 1 ko) renvoyait `503 Base de données indisponible`, alors que la base n'y était pour rien. Le gestionnaire d'erreurs de l'API transformait en 503 toute erreur autre qu'un JSON cassé. Corrigé : les erreurs du client gardent leur code (413 `Requête trop volumineuse`, 415 pour un encodage inconnu), et seul le reste devient un 503. La correction est dans le code, mais pas encore dans l'image publiée `1.0.0` : il faut publier une nouvelle version, sinon la prod garde le bug.
+3. Port de la base depuis l'hôte : `Test-NetConnection localhost -Port 5432` donne `False`, alors que 3000 et 8000 donnent `True`.
+4. Stats contre un `COUNT` manuel : `{"best_score":55,"games_played":13,"distinct_players":13}` et `55|13|13`. Comme chaque test avait pris un pseudo différent, j'ai ajouté une 2e partie pour `Adam`, pour vérifier que les deux compteurs se séparent bien : `14` parties pour `13` joueurs des deux côtés.
+5. Base tuée (`docker kill`) en pleine partie : le joueur finit sa partie, puis voit « Score final : 33. Non enregistré : Base de données indisponible ». L'API et les stats répondent 503 avec un message en 3 s et 3,9 s, et aucun service ne plante (0 redémarrage). Rien ne s'écroule en silence.
+
+Pour aller plus loin :
+- Retour à la normale après `docker compose start db` : base `healthy` en 4,8 s, API de nouveau en 200 en 5,0 s, stats en 5,4 s. Aucun service à relancer, et la partie suivante est enregistrée.
+- Après le `docker kill`, la base est restée `Exited (137)` malgré `restart: unless-stopped`. Un `docker kill` est un arrêt voulu pour Docker, qui ne relance pas le conteneur. Pour un vrai crash (Postgres arrêté brutalement de l'intérieur, `pg_ctl stop -m immediate`), Docker relance le conteneur tout seul (`RestartCount` passe à 1), la base est `healthy` en 6,0 s, l'API répond en 6,2 s, et les données sont intactes après la reprise de Postgres.
