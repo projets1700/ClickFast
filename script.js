@@ -1,6 +1,8 @@
 const GAME_DURATION_MS = 5000;
-// Le navigateur tourne sur la machine hôte : il joint l'API par le port qu'elle publie
-const API_URL = "http://localhost:3000";
+// Le navigateur tourne sur la machine hôte : il joint l'API par le port qu'elle publie.
+// L'URL vient de config.js, généré au démarrage du conteneur depuis la variable API_URL ;
+// la valeur de repli sert quand on ouvre index.html directement, sans conteneur.
+const API_URL = window.CLICKFAST_CONFIG?.apiUrl || "http://localhost:3000";
 const API_TIMEOUT_MS = 5000;
 
 const usernameInput = document.getElementById("username");
