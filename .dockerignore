@@ -1,0 +1,7 @@
+# Liste blanche : on exclut tout, puis on autorise uniquement ce qui sert à l'image.
+# Un nouveau fichier ajouté au repo n'entre donc jamais dans le contexte par accident.
+*
+!index.html
+!style.css
+!script.js
+!nginx.conf
