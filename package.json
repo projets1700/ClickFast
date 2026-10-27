@@ -4,12 +4,17 @@
   "private": true,
   "description": "ClickFast : sois le plus rapide des clickers du game",
   "scripts": {
+    "lint": "eslint .",
     "test": "jest"
   },
   "jest": {
     "testEnvironment": "jsdom"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
     "jest": "^30.5.2",
     "jest-environment-jsdom": "^30.5.2"
   }
