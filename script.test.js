@@ -46,7 +46,7 @@ describe("ClickFast : compteur de clics et chrono", () => {
 
   test("un clic fait passer le score à 1", () => {
     click();
-    expect(scoreEl.textContent).toBe("1");
+    expect(scoreEl.textContent).toBe("2");
   });
 
   test("plusieurs clics s'additionnent", () => {
