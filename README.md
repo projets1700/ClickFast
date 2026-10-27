@@ -422,13 +422,13 @@ Pipeline `ci.yml`, déclenchée à chaque push et pull request : un job `test` (
 
 ESLint 10, avec `@eslint/js` (règles recommandées) et `@stylistic/eslint-plugin` pour le point-virgule obligatoire et les guillemets doubles. À sa première exécution, il a trouvé 2 vrais défauts dans `script.js` : en relançant une erreur réseau, le code perdait l'erreur d'origine (règle `preserve-caught-error`). Corrigé avec `{ cause: err }` dans son propre commit, avant d'écrire le workflow. Pipeline en deux jobs reliés par `needs:` : `lint` (12 s), puis `test` (14 s), qui ne démarre qu'après lui. Run de 39 s.
 
-Cas limite et cas adverse (fichier mal stylé qui bloque `test`, branche renommée qui ne déclenche rien) : à faire.
+Cas limite, testé (PR #1, un point-virgule retiré dans `script.js`) : `lint` rouge, `test` et `build` jamais lancés. Cas adverse, testé : une branche poussée sous le nom `master` n'a déclenché aucun workflow (0 run), puisque `release.yml` ne vise que `main` et `verify.yml` que les pull requests. Rien ne signale qu'il ne se passe rien : c'est le piège silencieux.
 
 ### Jour 2, phase 2 : une image taguée au sha
 
 Job `build-and-push`, sur `main` seulement, après `test`. Connexion par `docker/login-action` avec les secrets `DOCKERHUB_USERNAME` et `DOCKERHUB_TOKEN`, publication par `docker/build-push-action`, tag `${{ github.sha }}`. Hors de `main`, un job `build` construit l'image sans la publier. Premier run : `arrow91/clickfast-front:9a49f4913f9c…` est sur Docker Hub, 5,75 Mo compressés, en 75 s de run. Le jeton Docker Hub est un jeton dédié (Read & Write), pas celui que Docker Desktop génère pour lui-même, qui a aussi le droit Delete.
 
-Cas adverse (secret mal orthographié qui ne fait échouer que `build-and-push`) : à faire.
+Cas adverse, testé sur la pipeline de l'API, qui a le même job sans validation humaine : un commit qui lit `secrets.DOCKERHUB_TOKN` au lieu de `DOCKERHUB_TOKEN`. `test` et `test-integration` restent verts, seul `build-and-push` est rouge (`Password required` à l'étape de login), et `deploy` est sauté. Un nom de secret inconnu ne provoque pas d'erreur : il vaut une chaîne vide. Les deux pushes sur `main` de la phase 1 du jour 3 ont produit deux tags distincts, `36ad32f` puis `c964806`.
 
 ### Jour 2, phase 3 : mesurer avant d'optimiser
 
@@ -447,7 +447,9 @@ Job `security-deps`, en parallèle de `lint` et `test` : `npm audit --audit-leve
 
 Ce qu'on en retient : notre ancien mot de passe de base, `clickfast_pwd` (révoqué au jour 1), apparaît 11 fois dans l'historique, et gitleaks ne le voit pas. Il cherche des formes connues de jetons et des chaînes très aléatoires, pas un mot de passe simple. Un scan vert ne prouve pas qu'il n'y a aucun secret.
 
-La publication attend aussi `security-deps` : une dépendance vulnérable bloque l'image. Cas normal et cas limite (dépendance vieillie, faux secret ajouté puis supprimé) : à faire.
+La publication attend aussi `security-deps` : une dépendance vulnérable bloque l'image.
+
+Cas normal, testé (PR #2, `lodash@4.17.4` en dépendance de dev) : `npm audit` trouve 1 vulnérabilité critique (prototype pollution, command injection, ReDoS), `security-deps` est rouge, et le résumé dit « ne pas publier en l'état ». Cas limite, testé en local pour ne pas laisser de faux secret dans l'historique public : une clé privée jetable commitée, puis supprimée au commit suivant. La même commande gitleaks que la pipeline la trouve (`leaks found: 1`, code de sortie 1), alors que le fichier n'est plus dans le dernier commit. Ces commits de test ont ensuite été effacés du dépôt local.
 
 ### Jour 2, phases 5 à 7 : Trivy, SBOM, résumé
 
@@ -459,13 +461,15 @@ La publication attend aussi `security-deps` : une dépendance vulnérable bloque
 - Le SBOM CycloneDX 1.6 de Syft se télécharge depuis l'onglet Actions. Il annonçait 468 composants : 446 sont des fichiers de l'image, et seuls 22 sont des paquets. Le résumé compte maintenant les paquets.
 - Le résumé de sécurité dépend des quatre jobs avec `if: always()`. Une valeur absente (job sauté ou planté) s'affiche « non mesuré », jamais 0. Il a répondu « publiable en confiance » sur `5155ec2`.
 
-Cas limite (vieille image nginx qui doit remonter des CVE) et cas adverse : à faire.
+Cas limite, testé en local avec la même version de Trivy (0.76.1) et le même seuil : `nginx:1.18-alpine` remonte 6 CRITICAL et 29 HIGH (dont CVE-2021-3711 dans OpenSSL et CVE-2021-36159 dans apk-tools), et sort en code 1. Le passer par la pipeline aurait publié une image vulnérable sur Docker Hub avant le scan, puisque `security-image` vient après `build-and-push` : un scan qui suit la publication signale le problème, il ne l'empêche pas.
+
+Cas du SBOM : `package.json` n'est pas dans l'image du jeu (liste blanche du `.dockerignore`), donc ni une dépendance changée ni une version inventée dans `package.json` n'apparaissent dans son SBOM. Le SBOM décrit ce qui est réellement livré, c'est-à-dire nginx et Alpine. Le résumé a été vérifié avec un job sauté : sur une pull request, les lignes image et SBOM affichent « non lancé », jamais 0.
 
 ### Jour 2, phase 8 : validation humaine
 
 Environnement `production` avec `projets1700` comme reviewer obligatoire, rattaché à `build-and-push`. Sur `5155ec2`, le job est resté « waiting » de 13:13 à 13:22 UTC (9 minutes), puis a été approuvé par `projets1700`. Ensuite, publication, Trivy, SBOM et résumé ont suivi.
 
-Cas adverse (un second compte, non reviewer, ne voit aucun bouton « approve ») : à faire avec un camarade.
+Cas adverse (un second compte, non reviewer, ne voit aucun bouton « approve ») : à faire avec un camarade, il faut un autre compte GitHub.
 
 ### Jour 2, phase 9 : vérifier ou publier
 
@@ -473,11 +477,18 @@ Cas adverse (un second compte, non reviewer, ne voit aucun bouton « approve »)
 
 Un vrai rouge sur `main`, juste après ce découpage : le Jest du jeu, lancé à la racine, ramassait aussi les tests de l'API (`api/test/`), dont `supertest` n'est installé que dans `api/`. Résultat : `test` rouge, et `build-and-push`, `security-image` et `sbom` sautés, donc rien de publié. Le fail fast a fait son travail. Correction en un commit : `testPathIgnorePatterns` exclut `api/` et `stats-api/`. Run rouge terminé à 14:25, correction poussée à 14:39 : 14 minutes entre le constat et la correction.
 
-Cas normal, limite et adverse (une PR lance `verify.yml` et jamais `release.yml`, branche `master`) : à faire.
+Testé : les 4 pull requests de test ont lancé `verify.yml` et jamais `release.yml`, et la branche `master` n'a rien déclenché du tout. La fusion d'une PR sur `main` lance `release.yml` (phase 10).
 
 ### Jour 2, phase 10 : casser main
 
-À faire : casser un test sur une branche, ouvrir la pull request, la fusionner malgré `verify.yml` rouge, observer `release.yml` échouer sur `main`, puis corriger et rendre `verify.yml` obligatoire dans les règles de la branche `main`.
+1. Sur la branche `test/casser-main`, l'assertion « un clic fait passer le score à 1 » attend 2.
+2. PR #4 : `verify.yml` rouge (`test` en échec, `build` sauté).
+3. GitHub laisse quand même fusionner : la PR est `MERGEABLE`, avec seulement le statut `UNSTABLE`. Aucune règle de branche n'exige que la vérification soit verte. Fusion à 14:47 UTC.
+4. `release.yml` rouge sur `main` à 14:47:51 UTC : `test` en échec, `build-and-push`, Trivy et SBOM sautés. Aucune image publiée pour ce commit, et les images d'avant restent sur Docker Hub, intactes.
+5. Ce qui s'est passé à l'étape 3, et la correction : dans Settings > Branches, une règle sur `main` avec « Require status checks to pass » et les jobs `lint` et `test` de `verify.yml` comme checks obligatoires. Le bouton de fusion aurait alors été bloqué.
+6. Première réparation ratée : un `sed` qui remplaçait tous les `toBe("2")` du fichier a aussi cassé le test Rejouer, et `main` est resté rouge (14:49:54). Ma commande vérifiait que Jest affichait sa ligne de résultat, pas qu'il réussissait. Deuxième réparation, vérifiée sur le code de sortie de Jest : `test` vert à 14:51:23 UTC.
+
+Temps de rétablissement (métrique DORA) : 3 min 32 s entre le premier rouge sur `main` et le retour au vert des tests. La publication, elle, attend encore la validation humaine.
 
 ### Jour 3, phase 1 : la pipeline de l'API
 
@@ -487,7 +498,9 @@ Cas normal, limite et adverse (une PR lance `verify.yml` et jamais `release.yml`
 
 La ligne `deploy/deploy_key` est entrée dans le `.gitignore` dans son propre commit, avant que la clé existe. `Dockerfile.vm` part de `docker:28.5.2-dind`, avec openssh, la seule clé publique autorisée, et la connexion par mot de passe désactivée. Un `.dockerignore` propre à ce Dockerfile ne laisse entrer que `deploy_key.pub` dans le contexte : la clé privée n'est même pas envoyée au build. Premier accroc : `vm-prod` publie le port 3000, déjà pris par la stack de dev, qu'il faut arrêter avant. Le `.env` de production est créé directement sur la machine, avec des mots de passe tirés au hasard sur place : ils ne sont jamais passés par le poste. Connexion SSH avec la clé : un shell dont `docker ps` est vide, aucun conteneur du poste visible.
 
-Cas adverses (connexion sans la clé refusée, redémarrage qui garde les images grâce au volume) : à faire.
+Cas adverses, testés : `ssh -p 2222 root@localhost` sans la clé donne `Permission denied (publickey)`. Le poste a redémarré en cours d'après-midi : vm-prod est repartie seule (`--restart unless-stopped`), avec ses images et ses données grâce aux volumes, et le redéploiement suivant n'a rien retéléchargé.
+
+Ce redémarrage a révélé un vrai bug : Prometheus restait arrêté (`Exited (255)`). Le job `deploy` lui envoyait `docker compose kill -s HUP` pour qu'il relise sa config, et Docker compte un `kill`, même avec un simple HUP, comme un arrêt manuel : `unless-stopped` ne le relance plus. Corrigé en envoyant le signal de l'intérieur du conteneur (`docker compose exec prometheus kill -HUP 1`). Autre protection vérifiée : sans `TAG`, `docker compose` refuse de démarrer (`TAG obligatoire`), au lieu de prendre `latest` en silence.
 
 ### Jour 3, phases 3 et 4 : le runner chez nous, et le job qui déploie
 
@@ -495,15 +508,26 @@ Runner self-hosted `poste-DESKTOP-FP8039E` (agent 2.338.2, empreinte SHA-256 vé
 
 Premier déploiement automatique : 6 min 12 s pour le job `deploy`, dont environ 3 min 30 s de téléchargement des images Postgres, Prometheus et Grafana, que vm-prod n'avait jamais vues. À la fin, `{"status":"ok"}` et `scores-api arrow91/clickfast-api:36ad32f… (healthy)`. Run complet de l'API : 9 min 35 s.
 
-Cas limite et adverse (job `Queued` quand le runner est arrêté, branche qui ne déploie pas, secret mal orthographié) : à faire.
+Cas testés :
+- Runner arrêté puis push sur `main` : le job `deploy` reste `Queued` (observé pendant 1 min 30 s), sans aucune erreur, et la prod ne bouge pas. Une fois le runner relancé, le job démarre tout seul.
+- Branches de test : `deploy` sauté à chaque fois. Le runner n'a exécuté aucun code venu d'une branche ou d'une PR.
+- `secrets.DEPLOY_PRT` au lieu de `DEPLOY_PORT` : `deploy` échoue à la première connexion, avec `ssh_config line 3: no argument after keyword "port"`. Le déploiement est sauté, la prod reste sur l'ancienne version, et le log ne contient aucune ligne de la clé privée (0 occurrence de `PRIVATE KEY`).
 
 ### Jour 3, phase 5 : rejouer, et revenir en arrière
 
-À faire, avec la commande de la procédure : un second déploiement identique (la durée de référence d'un déploiement à images déjà présentes), puis une régression volontaire et le retour arrière chronométré. Ce retour se fait avec `PREVIOUS_TAG`, que le job `deploy` écrit à chaque déploiement.
+Redéploiement avec les images de base déjà présentes : 1 min 05 s pour le job `deploy` (contre 6 min 12 s la première fois), 2 min 02 s pour tout le run. Aucun conteneur orphelin (4 conteneurs pour 4 services), `TAG` et `PREVIOUS_TAG` mis à jour.
+
+Retour arrière :
+1. Régression volontaire : le champ `created_at` disparaît de `GET /scores`, ce qu'aucun test ne vérifie. Elle passe donc la pipeline et arrive en production.
+2. Constat à 14:43:01 UTC.
+3. Commande de la procédure (`TAG=$(cat PREVIOUS_TAG)`, `pull`, `up -d --wait`) : `/scores` est correct **8,6 s** après son lancement, sans rien reconstruire. Le service est rétabli 9 s après le constat.
+4. La régression est ensuite annulée sur `main` par un `git revert`, sinon le prochain push l'aurait redéployée.
+
+Retour arrière vers un tag inexistant : `manifest unknown` au `pull`, rien n'est arrêté, la prod reste sur sa version et `/health` répond `ok`.
 
 ### Jour 3, phase 6 : les tests qui touchent la base
 
-Nouvelles routes `GET` et `DELETE /scores/:id`. Un identifiant qui n'est pas un entier positif est refusé en 400 avant d'interroger la base. Le job `test-integration` lance `postgres:18.6-alpine` en `services:`, avec un `pg_isready` comme contrôle de santé, joue `npm run migrate`, puis 5 tests : enregistrer puis relire par l'id (et vérifier en SQL que c'est vraiment en base), 404 sur un id absent, 400 sur un corps invalide sans rien écrire, suppression qui disparaît du classement, et classement trié et limité à 10. `TRUNCATE` avant chaque test : aucun test ne dépend d'un autre. 5 sur 5 verts. Les tests unitaires (22) tournent avec un faux pool qui échoue s'il est appelé, ce qui prouve qu'ils ne touchent pas la base.
+Nouvelles routes `GET` et `DELETE /scores/:id`. Le vrai contrôle, testé (PR #3) : un `DELETE` qui ne supprime plus rien passe les 22 tests unitaires, mais `test-integration` le voit (« un score supprimé disparaît du classement » en échec, 4 sur 5). `build-and-push` et `deploy` sont sautés. Un identifiant qui n'est pas un entier positif est refusé en 400 avant d'interroger la base. Le job `test-integration` lance `postgres:18.6-alpine` en `services:`, avec un `pg_isready` comme contrôle de santé, joue `npm run migrate`, puis 5 tests : enregistrer puis relire par l'id (et vérifier en SQL que c'est vraiment en base), 404 sur un id absent, 400 sur un corps invalide sans rien écrire, suppression qui disparaît du classement, et classement trié et limité à 10. `TRUNCATE` avant chaque test : aucun test ne dépend d'un autre. 5 sur 5 verts. Les tests unitaires (22) tournent avec un faux pool qui échoue s'il est appelé, ce qui prouve qu'ils ne touchent pas la base.
 
 ### Jour 3, phase 7 : rendre l'API mesurable
 
@@ -522,9 +546,15 @@ Le scrape de `/metrics` lui-même est exclu du trafic : sinon le tableau affiche
 
 | Moment | up | Requêtes/s | Taux d'erreur | p95 |
 | ------ | -- | ---------- | ------------- | --- |
-| Au repos, avant la boucle de charge | à relever | | | |
-| Pendant `scripts/charge-api.sh` | à relever | | | |
-| Pendant l'incident de la phase 10 | à relever | | | |
+| Au repos, avant la boucle de charge | 1 | 0,11 | 0 % | 5 ms |
+| Pendant `scripts/charge-api.sh` | 1 | 3,0 à 3,2 | 0 % | 0,7 à 1,3 s |
+| Incident « base arrêtée », sous charge | 1 | 0,40 | 77 % | 4,8 s |
+| Incident « API arrêtée » | 0 (après 9 s) | | | |
+| Incident tiré au hasard (n° 5, CPU saturé) | 1 | 0,09 | 0 % | 5 ms |
+
+Sous charge, le p95 grimpe à cause des écritures. Les `GET` restent à 5 ms, mais `POST /scores` prend 405 ms en moyenne et 2,1 s au p95. C'est la validation de chaque `INSERT` sur le disque, qui passe ici par trois couches (Postgres dans Docker dans Docker, dans la VM de Docker Desktop). 480 requêtes, 0 erreur.
+
+« Base arrêtée » : `up` reste à 1 et `/health` à 200, mais 77 % de 5xx. Le débit tombe parce que chaque requête attend les 3 s de `connectionTimeoutMillis`. La base revenue, l'API se reconnecte en 1 s, sans redémarrage. « API arrêtée » : `up` passe à 0 en 9 s (moins de 15 s demandées). Les deux images sont bien différentes : savoir les distinguer, c'est déjà diagnostiquer.
 
 ### Jour 3, phase 9 : la procédure
 
@@ -534,8 +564,16 @@ Le scrape de `/metrics` lui-même est exclu du trafic : sinon le tableau affiche
 - le retour arrière avec sa table de décision ;
 - 12 pannes connues avec leur signature dans le tableau de bord, dont les 5 de `incident.sh` et le piège « l'API est `healthy` mais hors de son réseau ».
 
-La relecture par quelqu'un qui ne connaît pas le projet reste à faire.
+Mise à l'épreuve sur un incident tiré au hasard (voir la phase 10). La relecture par quelqu'un qui ne connaît pas le projet reste à faire.
 
 ### Jour 3, phase 10 : la passation
 
-À faire en binôme : `ssh -i deploy/deploy_key -p 2222 root@localhost 'sh -s' < deploy/incident.sh`. Puis deux entrées (le pilote et les mains) : le panneau le plus utile, la ligne de procédure qui a manqué, et le temps entre la panne et le rétablissement.
+Tour en solo, pour éprouver la procédure avant la vraie passation. `incident.sh` est lancé sans regarder la panne, et le diagnostic se fait uniquement avec la procédure :
+- Le tableau de bord ne montre rien : `up` à 1, 0 % d'erreur, p95 à 5 ms.
+- C'est la liste des conteneurs qui parle : `hog-1` à `hog-4`, chacun à 100 % de CPU dans `docker stats`.
+- Remède de la procédure : `docker rm -f hog-1 hog-2 hog-3 hog-4`.
+- Panne déclenchée à 14:52:30 UTC, réparée à 14:53:11 : **41 s**. `base64 -d /root/.incident` confirme : panne n° 5.
+
+Le panneau le plus utile ? Aucun : la machine a assez de cœurs pour que l'API ne ralentisse pas (6 ms en lecture). La ligne de procédure qui a manqué : la signature disait « le p95 s'envole », c'était faux. Elle dit maintenant de regarder `docker ps` et `docker stats`, parce qu'un tableau de bord vert ne suffit pas.
+
+La vraie passation, avec un camarade pilote qui n'a que la procédure et le tableau de bord, reste à faire en binôme : deux entrées, une par rôle.
