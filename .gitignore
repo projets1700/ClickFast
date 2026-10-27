@@ -6,3 +6,4 @@ node_modules/
 # Clé SSH de déploiement : la privée devient un secret GitHub, elle n'entre jamais dans git
 deploy/deploy_key
 deploy/deploy_key.pub
+.incident
