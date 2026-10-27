@@ -51,7 +51,7 @@ function createApp(pool) {
   app.get("/scores", async (req, res) => {
     await schema();
     const { rows } = await pool.query(
-      "SELECT id, username, score FROM scores ORDER BY score DESC, created_at ASC LIMIT 10"
+      "SELECT id, username, score, created_at FROM scores ORDER BY score DESC, created_at ASC LIMIT 10"
     );
     res.json(rows);
   });
