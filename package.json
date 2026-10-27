@@ -1,0 +1,16 @@
+{
+  "name": "clickfast",
+  "version": "1.1.0",
+  "private": true,
+  "description": "ClickFast : sois le plus rapide des clickers du game",
+  "scripts": {
+    "test": "jest"
+  },
+  "jest": {
+    "testEnvironment": "jsdom"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2",
+    "jest-environment-jsdom": "^30.5.2"
+  }
+}
