@@ -18,6 +18,39 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
+  # Sécurité, en parallèle de lint et test : rien n'oblige à attendre les tests pour vérifier les dépendances
+  security-deps:
+    runs-on: ubuntu-latest
+    outputs:
+      audit_high: ${{ steps.audit.outputs.high }}
+      audit_critical: ${{ steps.audit.outputs.critical }}
+      gitleaks: ${{ steps.gitleaks.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tout l'historique : un secret supprimé au commit suivant reste lisible dans git log
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # SCA : on bloque sur high et critical, on laisse passer low et moderate
+      - name: npm audit
+        id: audit
+        run: |
+          npm audit --json > audit.json || true
+          high=$(node -p "require('./audit.json').metadata.vulnerabilities.high")
+          critical=$(node -p "require('./audit.json').metadata.vulnerabilities.critical")
+          echo "high=$high" >> "$GITHUB_OUTPUT"
+          echo "critical=$critical" >> "$GITHUB_OUTPUT"
+          npm audit --audit-level=high
+      # Secret scanning sur tout l'historique, même si l'audit a échoué
+      - name: gitleaks
+        id: gitleaks
+        if: ${{ !cancelled() }}
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # Stage 2 : les tests, seulement si le lint est vert
   test:
     needs: lint
