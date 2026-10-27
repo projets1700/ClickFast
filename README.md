@@ -4,6 +4,8 @@
 
 Jeu de rapidité : il faut cliquer le plus de fois possible sur un bouton en 5 secondes.
 
+Réalisé par Adam Amrane.
+
 Projet fil rouge de la formation DevOps : le jeu est volontairement simple (HTML / CSS / JS), le vrai sujet est sa dockerisation puis son passage en pipeline CI/CD.
 
 ## Comment jouer
@@ -26,7 +28,7 @@ cd ClickFast
 cp .env.example .env
 # ... éditer .env ...
 
-# Toute la stack en une commande : jeu, API de scores, Postgres et Adminer
+# Toute la stack en une commande : jeu, API de scores, stats, Postgres et Adminer
 docker compose up -d --build
 docker compose ps
 ```
@@ -64,6 +66,23 @@ npm test
 
 À chaque push et chaque pull request, GitHub Actions relance ces tests, puis construit l'image du jeu seulement s'ils sont verts (`.github/workflows/ci.yml`). Le badge en haut de cette page montre le résultat du dernier run.
 
+### Tester l'application à la main
+
+La stack lancée (`docker compose up -d --build`), voici les vérifications à faire, dans l'ordre :
+
+| # | Test | Comment | Résultat attendu | Mon résultat |
+| - | ---- | ------- | ---------------- | ------------ |
+| 1 | Partie complète | http://localhost:8080, saisir un pseudo, cliquer pendant 5 s | Le chrono descend à 0, le bouton se bloque, le score part au classement | |
+| 2 | Rejouer | Bouton **Rejouer** en fin de partie | Score et chrono remis à zéro, nouvelle partie possible | |
+| 3 | Classement | http://localhost:3000/scores | Mon score apparaît, trié du meilleur au moins bon | |
+| 4 | Stats | http://localhost:8000/stats | Meilleur score, nombre de parties et de joueurs corrects | |
+| 5 | Contenu de la base | http://localhost:8081, serveur `db`, identifiants du `.env` | La table `scores` contient mes parties | |
+| 6 | Base fermée | `Test-NetConnection localhost -Port 5432` (ou `nc -zv localhost 5432`) | Connexion refusée | |
+| 7 | Scores persistants | `docker compose down` puis `docker compose up -d` | Les scores sont toujours là | |
+| 8 | Base coupée | `docker compose stop db`, puis jouer une partie | Le jeu reste jouable et affiche « Non enregistré », sans bloquer | |
+| 9 | Retour de la base | `docker compose start db`, puis rejouer | Le score est de nouveau enregistré, sans relancer l'API | |
+| 10 | Smoke test | `docker compose run --rm smoke` | `Smoke test OK`, code de sortie 0 | |
+
 ## L'API de scores
 
 | Route          | Rôle                                                         |
@@ -76,7 +95,7 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 
 ## Le service de stats
 
-`GET /stats` sur le port 8000 renvoie `{ "best_score": 55, "games_played": 8, "distinct_players": 8 }`. Aucune partie : 200 avec des zéros. Base injoignable : 503 avec un message.
+`GET /stats` sur le port 8000 renvoie `{ "best_score": …, "games_played": …, "distinct_players": … }` (meilleur score, nombre de parties, nombre de joueurs distincts). Aucune partie : 200 avec des zéros. Base injoignable : 503 avec un message.
 
 ## Structure
 
