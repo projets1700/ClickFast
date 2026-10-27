@@ -128,3 +128,24 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           skip-setup-trivy: true
+
+  # Inventaire de ce qui est publié : un SBOM CycloneDX de l'image, téléchargeable dans l'onglet Actions
+  sbom:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    outputs:
+      components: ${{ steps.count.outputs.components }}
+    steps:
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/clickfast-front:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+      - name: Comptage des composants
+        id: count
+        run: echo "components=$(jq '.components | length' sbom.cdx.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-clickfast-front-${{ github.sha }}
+          path: sbom.cdx.json
