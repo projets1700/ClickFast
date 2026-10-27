@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # npm ci installe exactement le package-lock.json, comme dans les Dockerfile
+      - run: npm ci
+      - run: npm test
+
+  build:
+    # Fail fast : l'image n'est construite que si les tests sont verts
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build de l'image du jeu
+        run: docker build . --file Dockerfile --tag clickfast-front:${{ github.sha }}
