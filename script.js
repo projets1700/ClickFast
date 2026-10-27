@@ -121,3 +121,8 @@ clickButton.addEventListener("click", () => {
 restartButton.addEventListener("click", resetGame);
 
 loadLeaderboard();
+
+// Export pour les tests Jest : "module" n'existe pas dans le navigateur, qui ignore donc ce bloc
+if (typeof module !== "undefined") {
+  module.exports = { GAME_DURATION_MS, resetGame, getCount: () => count };
+}
