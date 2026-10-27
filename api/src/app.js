@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const { ensureSchema } = require("./schema");
 const { validateScore } = require("./validation");
+const { createMetrics } = require("./metrics");
 
 function createApp(pool) {
   let schemaReady = false;
@@ -13,12 +14,22 @@ function createApp(pool) {
     console.log("Table scores prête");
   }
 
+  const metrics = createMetrics();
+
   const app = express();
+  // En premier : toute requête est comptée, y compris celles rejetées plus loin (JSON cassé, 404)
+  app.use(metrics.middleware);
   app.use(cors());
   app.use(express.json({ limit: "1kb" }));
 
   app.get("/health", (req, res) => {
     res.json({ status: "ok" });
+  });
+
+  // Format texte de Prometheus, jamais du JSON
+  app.get("/metrics", async (req, res) => {
+    res.set("Content-Type", metrics.register.contentType);
+    res.end(await metrics.register.metrics());
   });
 
   // Enregistre un score
@@ -32,6 +43,7 @@ function createApp(pool) {
       "INSERT INTO scores (username, score) VALUES ($1, $2) RETURNING id, username, score, created_at",
       [username, score]
     );
+    metrics.scoresRecorded.inc();
     res.status(201).json(rows[0]);
   });
 
