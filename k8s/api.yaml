@@ -25,6 +25,22 @@ spec:
                 name: scores-config
             - secretRef:
                 name: scores-secret
+          # Readiness : le pod ne reçoit du trafic qu'une fois que Node répond. En échec, il sort du Service
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          # Liveness : si /health ne répond plus 3 fois de suite, le conteneur est redémarré.
+          # Limite connue : /health ne touche pas la base, ces deux sondes ne voient pas une base coupée
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
 ---
 # Adresse stable devant les pods : "scores-api" dans le namespace, port 80 vers le 3000 des conteneurs
 apiVersion: v1
