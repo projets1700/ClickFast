@@ -2,3 +2,7 @@ node_modules/
 
 # Vraies valeurs de configuration et secrets : jamais dans git (le modèle est .env.example)
 .env
+
+# Clé SSH de déploiement : la privée devient un secret GitHub, elle n'entre jamais dans git
+deploy/deploy_key
+deploy/deploy_key.pub
