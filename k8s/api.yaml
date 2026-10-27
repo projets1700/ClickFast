@@ -42,10 +42,10 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 40Mi
+              memory: 32Mi
             limits:
               cpu: 500m
-              memory: 40Mi
+              memory: 32Mi
           # Readiness : le pod ne reçoit du trafic qu'une fois que Node répond. En échec, il sort du Service
           readinessProbe:
             httpGet:
