@@ -81,7 +81,7 @@ npm run test:integration  # intégration
 | -------- | ----------- | ------------- |
 | `verify.yml` | toute pull request | lint, tests, `npm audit`, gitleaks sur tout l'historique, build de l'image du jeu (jamais publiée), résumé de sécurité |
 | `release.yml` | push sur `main` | la même vérification, puis publication de `arrow91/clickfast-front:<sha>` après validation humaine (environnement `production`), scan Trivy, SBOM CycloneDX, résumé de sécurité |
-| `api.yml` | push ou pull request touchant `api/` ou `deploy/` | tests unitaires et d'intégration ; sur `main` seulement : publication de `arrow91/clickfast-api:<sha>` puis déploiement sur `vm-prod` par le runner self-hosted |
+| `api.yml` | push ou pull request touchant `api/`, `deploy/` ou `k8s/` | tests unitaires et d'intégration ; sur `main` seulement : publication de `arrow91/clickfast-api:<sha>` puis déploiement sur le cluster par le runner self-hosted (`kubectl apply` puis `rollout status`) |
 
 Le badge en haut de cette page montre le résultat du dernier `release.yml` sur `main`.
 
@@ -115,7 +115,23 @@ La stack lancée (`docker compose up -d --build`), voici les vérifications à f
 
 Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier entre 0 et 200, ou un JSON cassé donnent un 400 avec le détail. Un corps de plus de 1 ko donne un 413. Base injoignable : 503 avec un message, jamais de stacktrace.
 
-## La production : vm-prod
+## La production : le cluster Kubernetes
+
+Depuis le jour 4, l'API de scores tourne dans un cluster k3d (Kubernetes léger, dont les nodes sont des conteneurs Docker) : 3 replicas, sa base dans un volume persistant, et une entrée HTTP par Traefik.
+
+```bash
+k3d cluster create clickfast-cluster -p "8080:80@loadbalancer"
+kubectl apply -f k8s/namespace.yaml
+kubectl create secret generic scores-secret -n clickfast \
+  --from-literal=DB_USER=clickfast --from-literal=DB_NAME=clickfast \
+  --from-literal=DB_PASSWORD="<un vrai mot de passe>"
+kubectl apply -f k8s/config.yaml -f k8s/db.yaml -f k8s/api.yaml -f k8s/ingress.yaml
+curl -H "Host: scores.localhost" http://localhost:8080/health
+```
+
+Un push sur `main` met le cluster à jour tout seul (job `deploy` de `api.yml`). Pour le reste (déploiement d'urgence, retour arrière, pannes connues) : [la procédure de déploiement](docs/PROCEDURE_DEPLOIEMENT.md).
+
+## Jusqu'au jour 3 : vm-prod
 
 Une maquette de machine de production : un conteneur avec son propre Docker et un serveur SSH (`deploy/Dockerfile.vm`). Aucun code source dessus, seulement `/srv/clickfast/compose.yml`, son `.env` (copié une fois à la main, jamais dans git) et la config du monitoring.
 
@@ -131,7 +147,7 @@ docker run -d --privileged --name vm-prod --restart unless-stopped   -p 2222:22 
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3001 (utilisateur `admin`, mot de passe dans le `.env` de vm-prod) |
 
-Un push sur `main` déploie tout seul. Pour tout le reste (déploiement d'urgence, retour arrière, pannes connues) : [la procédure de déploiement](docs/PROCEDURE_DEPLOIEMENT.md).
+Au jour 3, un push sur `main` déployait ici en SSH. Depuis le jour 4, vm-prod est arrêtée (`docker stop vm-prod`, pas supprimée) : elle sert de point de comparaison.
 
 ## Le service de stats
 
@@ -161,9 +177,12 @@ Un push sur `main` déploie tout seul. Pour tout le reste (déploiement d'urgenc
 | `.github/workflows/` | La pipeline GitHub Actions : `verify.yml`, `release.yml`, `api.yml` |
 | `eslint.config.js` | Les règles de style du jeu                                 |
 | `api/test/`     | Tests de l'API : `unit/` sans base, `integration/` contre PostgreSQL |
+| `k8s/`          | Les manifestes du cluster : namespace, ConfigMap, modèle de Secret, base et PVC, API, Ingress, et `chaos.sh` |
 | `deploy/`       | La production : `Dockerfile.vm`, `compose.yml`, monitoring (Prometheus, Grafana), `incident.sh` |
 | `docs/PROCEDURE_DEPLOIEMENT.md` | La procédure de déploiement, pour l'astreinte |
 | `scripts/charge-api.sh` | Génère du trafic sur l'API de vm-prod                  |
+| `scripts/charge-k8s.sh` | Génère du trafic sur l'API du cluster, par l'Ingress   |
+| `scripts/compteurs-pods.sh` | Lit le compteur de requêtes de chaque pod, sans passer par le Service |
 
 ## Mesures des images
 
@@ -577,3 +596,105 @@ Tour en solo, pour éprouver la procédure avant la vraie passation. `incident.s
 Le panneau le plus utile ? Aucun : la machine a assez de cœurs pour que l'API ne ralentisse pas (6 ms en lecture). La ligne de procédure qui a manqué : la signature disait « le p95 s'envole », c'était faux. Elle dit maintenant de regarder `docker ps` et `docker stats`, parce qu'un tableau de bord vert ne suffit pas.
 
 La vraie passation, avec un camarade pilote qui n'a que la procédure et le tableau de bord, reste à faire en binôme : deux entrées, une par rôle.
+
+### Jour 4, phase 1 : le cluster, et l'API dessus
+
+`vm-prod` arrêtée (pas supprimée), puis `k3d cluster create clickfast-cluster -p "8080:80@loadbalancer"` : 84 s, un node `Ready` qui est à la fois control plane et node d'exécution (k3s v1.35.5). Namespace `clickfast`, Deployment et Service `scores-api` avec l'image taguée au sha. Sans configuration, le pod tombe en `Error` et ses logs disent `Variables d'environnement manquantes : DB_HOST, DB_USER, DB_PASSWORD, DB_NAME` : le garde-fou du jour 1 marche aussi dans le cluster.
+
+- Pod supprimé à la main : un autre est prêt 11 s plus tard, sans rien retaper.
+- Image mal orthographiée (`clikfast-api`) : le nouveau pod reste en `ErrImagePull` puis `ImagePullBackOff`, jamais en `Running`, et l'ancien continue de servir.
+
+### Jour 4, phase 2 : la configuration sort de l'image
+
+ConfigMap `scores-config` (`DB_HOST: scores-db`, le nom du Service, `DB_PORT`, `NODE_ENV`) et Secret `scores-secret` (`DB_USER`, `DB_PASSWORD`, `DB_NAME`), injectés par `envFrom`. Le Secret est créé par `kubectl create secret` avec un mot de passe tiré au hasard. Seul un modèle aux valeurs bidon (`k8s/secret.example.yaml`) est dans le dépôt. Dans le conteneur, `env` montre bien les 5 variables, et l'image n'en contient aucune (0 variable `DB_` dans `docker run … env`).
+
+### Jour 4, phase 3 : la base et ses données
+
+PVC de 1Gi `Bound` tout de suite (StorageClass `local-path` de k3s), Deployment `scores-db` en `postgres:18.6-alpine`, la même version qu'en prod et en CI. Premier accroc évité : le manifeste du cours monte `/var/lib/postgresql/data`, or Postgres 18 range ses données sous `/var/lib/postgresql` (déjà rencontré au jour 1). Le montage, avec un `subPath`, est donc fait sur `/var/lib/postgresql`. La stratégie est `Recreate`, pour ne jamais avoir deux Postgres sur le même volume.
+
+- Un score enregistré, puis le pod de la base supprimé : le score est toujours là au `GET` suivant.
+- Selector du Service de la base cassé : le Service n'a plus aucun endpoint alors que le pod Postgres tourne, et l'API répond 503 en 15 ms. Le nom `scores-db` se résout encore, mais la connexion est refusée tout de suite.
+- Suppression d'un PVC utilisé par un pod (testée sur un PVC jetable : un PVC dont la suppression a commencé ne peut plus être sauvé) : il reste en `Terminating`, protégé par le finalizer `kubernetes.io/pvc-protection`, et ne disparaît qu'une fois le pod supprimé.
+
+### Jour 4, phase 4 : la porte d'entrée
+
+Ingress Traefik sur `scores.localhost` : `curl -H "Host: scores.localhost" localhost:8080/health` répond `{"status":"ok"}`, et `http://scores.localhost:8080` marche aussi sans en-tête. Chemin `/api` au lieu de `/` : 404. Port 3000 au lieu de 80 : 404 aussi, et pas une erreur de passerelle comme l'annonçait le cours. Dans les deux cas, c'est Traefik qui répond (`404 page not found` en texte brut), alors que l'API répond toujours en JSON : c'est ce qui permet de savoir qui a répondu.
+
+### Jour 4, phase 5 : la pipeline déploie sur le cluster
+
+Le job `deploy` de `api.yml` ne fait plus de SSH : `kubectl apply` des manifestes, avec le tag de l'image remplacé par le sha du commit, puis `rollout status --timeout=180s`, qui fait échouer le job si le rollout ne converge pas. Aucun nouveau secret GitHub : le runner tourne sur le même poste que le cluster et lit son kubeconfig.
+
+Premier run : `successfully rolled out`, l'image du Deployment porte le nouveau sha… et la vérification par l'Ingress prend un 502. Sans sonde de readiness (elle arrive en phase 7), un pod compte comme prêt dès que son conteneur démarre, avant que Node écoute. La vérification fait maintenant quelques essais, et les sondes règlent le fond du problème. Le cas « tag inexistant » est vu en phases 1 et 10 : le nouveau pod reste en `ImagePullBackOff` et `rollout status` n'aboutit jamais, donc le job deviendrait rouge au bout de 3 minutes.
+
+### Jour 4, phase 6 : trois replicas, et la preuve
+
+`replicas: 3`. Avant la charge, le compteur `GET /scores` de chaque pod, lu en contournant le Service (`port-forward` pod par pod), est à 0 sur les trois. Après 20 s de `charge-k8s.sh` par l'Ingress : **18, 18 et 18**, et 54 requêtes sans échec, une répartition parfaitement égale. Selector du Service cassé : les 3 pods restent `Running` et chaque requête reçoit un 503.
+
+### Jour 4, phase 7 : les sondes, dont celle qui ment
+
+Readiness sur `/health` (5 s), liveness sur `/health` (après 15 s, 3 échecs de suite). Au démarrage, 2 événements `Unhealthy` : la readiness passe 2 s après le lancement, avant que Node écoute, et le pod n'est simplement pas encore prêt. C'est son rôle.
+
+- Base coupée (`scale --replicas=0`) : les 3 pods restent `1/1 Running`, `/health` répond 200, `/scores` répond 503. Les deux sondes mentent de la même façon : elles prouvent que le serveur écoute, pas que le service marche. Limite documentée dans la procédure. Un `/health` qui interroge la base serait plus juste, mais ferait tomber toutes les sondes à la fois au moindre ralentissement de la base.
+- Readiness sur le port 3001 : le nouveau pod reste `0/1` et `rollout status` expire. Les 3 anciens pods servent toujours (0 requête échouée), parce que `maxUnavailable` empêche de les retirer.
+
+### Jour 4, phase 8 : le rolling update sous charge, mesuré
+
+`maxSurge: 1`, `maxUnavailable: 0`. Protocole : `charge-k8s.sh` par l'Ingress, et pendant ce temps `kubectl set image` vers une autre version, suivi de `rollout status`. La ligne « hier » est mesurée pour de vrai : vm-prod redémarrée, même boucle de requêtes, redéploiement par `docker compose up` d'une autre version.
+
+| Déploiement | Requêtes échouées | Secondes d'indisponibilité | Temps de convergence |
+| ----------- | ----------------- | -------------------------- | -------------------- |
+| Hier, SSH + compose (vm-prod) | 16 sur 151 | échecs répartis sur 29,5 s | 23,3 s |
+| Rolling update, 1er réglage (essai 1) | 3 sur 94 (504) | | 24,2 s |
+| Rolling update, 1er réglage (essai 2) | 1 sur 41 (504) | | 20,8 s |
+| Rolling update + `preStop` (essai 1) | 1 sur 167 (502) | | 15,0 s |
+| Rolling update + `preStop` (essai 2) | 0 sur 165 | 0 | 23,6 s |
+| `maxSurge 0` / `maxUnavailable 1` + `preStop` | 0 sur 163 | 0 | 22,5 s |
+
+Premier accroc : des 504 malgré `maxUnavailable: 0`. Un ancien pod reçoit SIGTERM et Node s'arrête aussitôt, alors que Traefik n'a pas encore appris que ce pod a quitté le Service. Il lui envoie une requête qui n'aura jamais de réponse, et attend jusqu'à expiration. Parade : un `preStop` de 10 s, pendant lequel le pod sort du Service et Traefik l'oublie, avant que Node reçoive SIGTERM. Les requêtes suspendues disparaissent aussi, et le débit passe de ~1 à ~2,8 requêtes par seconde.
+
+Remettre `maxUnavailable` à sa valeur par défaut ne change rien : 25 % de 3 replicas s'arrondit à 0. Avec `maxUnavailable: 1`, toujours 0 échec : à cette charge, 2 pods suffisent. Les pertes venaient de la façon dont un pod s'arrête, pas d'un manque de capacité.
+
+### Jour 4, phase 9 : le retour arrière, comparé à hier
+
+L'image de la régression du jour 3 (`e5a9b49`, `created_at` absent du classement) est déployée, la casse est constatée par un `curl`, puis `kubectl rollout undo` : **20,3 s** entre le `undo` et 6 réponses correctes d'affilée, sans coupure. Hier, sur vm-prod : 8,6 s, mais avec une coupure, puisque le conteneur est remplacé d'un coup. Le cluster est plus lent parce qu'il remplace les pods un par un, avec les 10 s de `preStop`, mais personne n'a vu d'erreur. `rollout history` liste les révisions, et `undo --to-revision=16` a bien visé la révision demandée. Sur un Deployment jamais mis à jour : `error: no rollout history found`, rien n'est touché.
+
+### Jour 4, phase 10 : cinq pannes, dont deux qu'il absorbe
+
+`k8s/chaos.sh`, adapté à nos noms. Chaque panne est forcée une fois (`CHAOS_N=1..5`) pour remplir le tableau :
+
+| Panne | Signature dans `kubectl get pods` | Signature dans `describe` / events / logs | Se répare seule ? | Remède |
+| ----- | -------------------------------- | ----------------------------------------- | ----------------- | ------ |
+| Pod supprimé | un nouveau nom de pod, 3/3 | `Killing` puis `Created pod` | Oui, ~5 s | Rien |
+| Processus tué | `RESTARTS` à 1, `0/1` quelques secondes | `Started` à nouveau | Oui, ~10 s | Rien |
+| Tag d'image inexistant | un pod neuf `ImagePullBackOff`, les 3 anciens `Running` | `Failed to pull image … not found` | Non | `rollout undo` (1 s) |
+| Clé du Secret supprimée | un pod neuf `Error` / `CrashLoopBackOff` | `logs --previous` : `Variables d'environnement manquantes : DB_PASSWORD` | Non | remettre la clé, `rollout restart` (15 s) |
+| Limite mémoire trop basse | un pod neuf `OOMKilled` / `CrashLoopBackOff` | `Last State: Terminated, Reason: OOMKilled`, `Limits: memory: 8Mi` | Non | `rollout undo` (1 s) |
+
+Ce que le cours ne disait pas : avec `maxUnavailable: 0`, aucune des trois pannes de configuration n'a coupé le service (200 tout du long). Le pod cassé reste bloqué, les anciens continuent de servir. Elles ne se réparent pas pour autant : le prochain déploiement est bloqué tant qu'on ne les a pas traitées. Pour la panne 4, le mot de passe a été gardé de côté avant de le retirer : sans lui, il aurait été perdu, alors que la base a été initialisée avec.
+
+### Jour 4, phase 11 : la procédure, version cluster
+
+`docs/PROCEDURE_DEPLOIEMENT.md`, le même fichier qu'hier, réécrit :
+- un alias `k` qui force le contexte `k3d-clickfast-cluster` et le namespace, pour ne jamais viser le mauvais cluster ;
+- le déploiement d'urgence par `set image` et `rollout status` ;
+- le retour arrière par `rollout undo` (20 s mesurées) ;
+- les 5 pannes du tableau, plus le Service sans endpoint, l'Ingress cassé et le runner arrêté ;
+- la limite de `/health`.
+
+Plus aucune commande SSH ni `docker restart`.
+
+### Jour 4, phase 12 : jusqu'où serrer la mémoire
+
+`kubectl top pods` : 26-27Mi par pod au repos comme sous charge, la base à 24Mi. Ensuite, une limite mémoire de plus en plus basse, un commit par valeur, et à chaque fois un rolling update sous charge :
+
+| `limits.memory` | Mémoire mesurée | Rolling update sous charge | `OOMKilled` |
+| --------------- | --------------- | -------------------------- | ----------- |
+| 64Mi | 27Mi | 0 échec sur 135 | 0 |
+| 48Mi | 23Mi | 0 sur 134 | 0 |
+| 40Mi | 23-24Mi | 0 sur 138 | 0 |
+| 32Mi | 23Mi | 0 sur 137 | 0 |
+| 28Mi | 23-24Mi | 0 sur 138 | 0 |
+| 24Mi | 22-23Mi | **3 sur 139** (502) | 0 visible |
+| 20Mi | | ne converge pas | `OOMKilled` dès le démarrage, puis `CrashLoopBackOff` |
+
+20Mi casse, 24Mi tient au repos mais perd des requêtes pendant une mise à jour : ce n'est pas encore la bonne valeur. 28Mi est le plus bas réglage sans aucun échec. Valeur retenue : **32Mi** (requests et limits), soit environ 35 % de marge au-dessus des 23-24Mi mesurés. 28Mi ne laissait que 4Mi pour absorber un pic. CPU : 50m demandés, 500m au plus, pour des pods mesurés à 8-10m.
