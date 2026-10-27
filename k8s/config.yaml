@@ -1,0 +1,11 @@
+# Configuration non sensible de l'API, injectée par envFrom (les noms de variables sont ceux du jour 1)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scores-config
+  namespace: clickfast
+data:
+  # Le nom du Service de la base, résolu par le DNS du cluster : ni IP, ni localhost
+  DB_HOST: scores-db
+  DB_PORT: "5432"
+  NODE_ENV: production

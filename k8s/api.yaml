@@ -19,6 +19,12 @@ spec:
           image: arrow91/clickfast-api:6a89014a40afaa373e4b6af53f9a5f12a45265db
           ports:
             - containerPort: 3000
+          # Toute la config vient du cluster : rien dans l'image, rien en clair dans le dépôt
+          envFrom:
+            - configMapRef:
+                name: scores-config
+            - secretRef:
+                name: scores-secret
 ---
 # Adresse stable devant les pods : "scores-api" dans le namespace, port 80 vers le 3000 des conteneurs
 apiVersion: v1
