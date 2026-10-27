@@ -1,0 +1,12 @@
+# Charge au démarrage les tableaux de bord versionnés dans le dépôt (monitoring/grafana/dashboards)
+apiVersion: 1
+
+providers:
+  - name: clickfast
+    folder: ClickFast
+    type: file
+    # Un tableau modifié à la main dans Grafana serait écrasé : la vérité est dans le dépôt
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

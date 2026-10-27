@@ -1,0 +1,11 @@
+# Prometheus de vm-prod : lit le /metrics de l'API de scores.
+# Envoyé par la pipeline dans /srv/clickfast/monitoring, jamais modifié directement en production.
+global:
+  # Court, pour voir les effets d'une panne en quelques secondes pendant le cours
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: scores-api
+    static_configs:
+      # Le nom du service sur le réseau de la stack, jamais une adresse IP
+      - targets: ["scores-api:3000"]

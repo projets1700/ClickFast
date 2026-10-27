@@ -143,8 +143,9 @@ jobs:
             echo "SSH_CONFIG=$tmp/ssh_config"
           } >> "$GITHUB_ENV"
 
-      - name: Envoi de compose.yml
-        run: scp -F "$SSH_CONFIG" deploy/compose.yml vm-prod:/srv/clickfast/compose.yml
+      # compose.yml et la config du monitoring partent du dépôt : rien ne se modifie à la main en prod
+      - name: Envoi de compose.yml et du monitoring
+        run: scp -F "$SSH_CONFIG" -r deploy/compose.yml deploy/monitoring vm-prod:/srv/clickfast/
 
       # pull d'abord : si le tag n'existe pas, on s'arrête là, l'ancienne version tourne toujours
       - name: Déploiement de ${{ github.sha }}
@@ -155,6 +156,8 @@ jobs:
             export TAG=$TAG
             docker compose pull --quiet scores-api
             docker compose up -d --wait --wait-timeout 90
+            # Prometheus relit sa config sans redémarrer (SIGHUP)
+            docker compose kill -s HUP prometheus
             if [ -f TAG ]; then cp TAG PREVIOUS_TAG; fi
             echo $TAG > TAG
             docker compose ps --format '{{.Name}} {{.Image}} {{.Status}}'

@@ -1,4 +1,4 @@
-# La stack de production sur vm-prod (/srv/clickfast) : l'API de scores et sa base.
+# La stack de production sur vm-prod (/srv/clickfast) : l'API de scores, sa base, et leur surveillance.
 # Elle ne construit rien : elle télécharge l'image dont le tag (le sha du commit) vient de l'extérieur.
 #   cd /srv/clickfast && TAG=<sha> docker compose up -d
 # Les mots de passe sont dans /srv/clickfast/.env, copié une fois à la main (modèle : .env.vm.example).
@@ -48,5 +48,35 @@ services:
       start_interval: 1s
     restart: unless-stopped
 
+  # Surveillance : sur le même réseau que l'API, qu'elle joint par son nom de service (scores-api:3000)
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v3.13.4
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:13.0.11
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      # Grafana écoute sur 3000 dans son conteneur, déjà pris par l'API côté vm-prod : publié en 3001
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   scores-pgdata:
+  prometheus-data:
+  grafana-data:

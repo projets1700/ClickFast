@@ -1,0 +1,12 @@
+# Source de données de Grafana, créée au démarrage.
+# http://prometheus:9090 et pas localhost:9090 : depuis le conteneur Grafana, localhost désigne Grafana lui-même.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
