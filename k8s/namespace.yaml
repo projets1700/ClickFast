@@ -1,0 +1,5 @@
+# Tout ClickFast vit dans son propre namespace, à l'écart du reste du cluster
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clickfast

@@ -1,0 +1,35 @@
+# L'API de scores : l'image publiée par la pipeline, taguée au sha d'un commit (jamais latest)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scores-api
+  namespace: clickfast
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scores-api
+  template:
+    metadata:
+      labels:
+        app: scores-api
+    spec:
+      containers:
+        - name: scores-api
+          image: arrow91/clickfast-api:6a89014a40afaa373e4b6af53f9a5f12a45265db
+          ports:
+            - containerPort: 3000
+---
+# Adresse stable devant les pods : "scores-api" dans le namespace, port 80 vers le 3000 des conteneurs
+apiVersion: v1
+kind: Service
+metadata:
+  name: scores-api
+  namespace: clickfast
+spec:
+  type: ClusterIP
+  selector:
+    app: scores-api
+  ports:
+    - port: 80
+      targetPort: 3000
