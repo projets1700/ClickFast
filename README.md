@@ -1,5 +1,7 @@
 # ClickFast
 
+[![CI](https://github.com/projets1700/ClickFast/actions/workflows/ci.yml/badge.svg)](https://github.com/projets1700/ClickFast/actions/workflows/ci.yml)
+
 Jeu de rapidité : il faut cliquer le plus de fois possible sur un bouton en 5 secondes.
 
 Projet fil rouge de la formation DevOps : le jeu est volontairement simple (HTML / CSS / JS), le vrai sujet est sa dockerisation puis son passage en pipeline CI/CD.
@@ -49,6 +51,17 @@ Les images sont sur Docker Hub : `arrow91/clickfast-front`, `arrow91/clickfast-a
 docker compose -f docker-compose.prod.yml up -d
 ```
 
+## Les tests
+
+Les tests du compteur de clics et du chrono tournent avec Jest, sur un faux DOM (jsdom) :
+
+```bash
+npm ci
+npm test
+```
+
+À chaque push et chaque pull request, GitHub Actions relance ces tests, puis construit l'image du jeu seulement s'ils sont verts (`.github/workflows/ci.yml`). Le badge en haut de cette page montre le résultat du dernier run.
+
 ## L'API de scores
 
 | Route          | Rôle                                                         |
@@ -80,6 +93,9 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `docker-compose.yml` | Toute la stack : jeu, API, stats, Postgres, Adminer    |
 | `docker-compose.prod.yml` | La même stack depuis les images publiées sur Docker Hub |
 | `scripts/mesure.sh` | Mesure des images pour le tableau ci-dessous          |
+| `script.test.js` | Les tests Jest du jeu                                     |
+| `package.json`  | Les outils de test du jeu (Jest), hors de l'image           |
+| `.github/workflows/` | La pipeline GitHub Actions                             |
 
 ## Mesures des images
 
