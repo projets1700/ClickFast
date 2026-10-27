@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          # Cache du dossier de téléchargement de npm, indexé sur le hash de package-lock.json
+          cache: npm
       - run: npm ci
       - run: npm run lint
 
@@ -25,6 +27,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          # Cache du dossier de téléchargement de npm, indexé sur le hash de package-lock.json
+          cache: npm
       # npm ci installe exactement le package-lock.json, comme dans les Dockerfile
       - run: npm ci
       - run: npm test
