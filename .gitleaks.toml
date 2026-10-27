@@ -1,0 +1,10 @@
+# Configuration de gitleaks : toutes les règles par défaut, plus une seule exception.
+[extend]
+useDefault = true
+
+# Un tag d'image au sha du commit (ex. arrow91/clickfast-api:<40 caractères hexa>) ressemble à une
+# clé d'API pour la règle generic-api-key, mais c'est l'empreinte publique d'un commit, pas un secret.
+[[allowlists]]
+description = "Tags d'image Docker au sha du commit"
+regexTarget = "line"
+regexes = ['''clickfast-(api|front):[0-9a-f]{40}''']
