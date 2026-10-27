@@ -1,6 +1,6 @@
 # ClickFast
 
-[![CI](https://github.com/projets1700/ClickFast/actions/workflows/ci.yml/badge.svg)](https://github.com/projets1700/ClickFast/actions/workflows/ci.yml)
+[![CI](https://github.com/projets1700/ClickFast/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/projets1700/ClickFast/actions/workflows/release.yml)
 
 Jeu de rapidité : il faut cliquer le plus de fois possible sur un bouton en 5 secondes.
 
@@ -64,7 +64,7 @@ npm ci
 npm test
 ```
 
-À chaque push et chaque pull request, GitHub Actions relance ces tests, puis construit l'image du jeu seulement s'ils sont verts (`.github/workflows/ci.yml`). Le badge en haut de cette page montre le résultat du dernier run.
+À chaque push et chaque pull request, GitHub Actions relance ces tests, puis construit l'image du jeu seulement s'ils sont verts (`.github/workflows/`). Le badge en haut de cette page montre le résultat du dernier run.
 
 ### Tester l'application à la main
 
