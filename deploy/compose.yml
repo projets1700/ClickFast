@@ -1,0 +1,52 @@
+# La stack de production sur vm-prod (/srv/clickfast) : l'API de scores et sa base.
+# Elle ne construit rien : elle télécharge l'image dont le tag (le sha du commit) vient de l'extérieur.
+#   cd /srv/clickfast && TAG=<sha> docker compose up -d
+# Les mots de passe sont dans /srv/clickfast/.env, copié une fois à la main (modèle : .env.vm.example).
+name: clickfast-prod
+
+services:
+  scores-api:
+    # Nom fixe : la pipeline, la procédure et les scripts d'incident le désignent par ce nom
+    container_name: scores-api
+    # ${TAG:?} : sans tag, compose refuse de démarrer au lieu de prendre "latest" en silence
+    image: ${DOCKERHUB_USER}/clickfast-api:${TAG:?TAG obligatoire, le sha du commit à déployer}
+    environment:
+      DB_HOST: scores-db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    ports:
+      - "3000:3000"
+    depends_on:
+      scores-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
+    restart: unless-stopped
+
+  scores-db:
+    container_name: scores-db
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - scores-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+      start_interval: 1s
+    restart: unless-stopped
+
+volumes:
+  scores-pgdata:
