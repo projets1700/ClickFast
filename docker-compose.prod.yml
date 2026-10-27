@@ -7,7 +7,7 @@ name: clickfast
 services:
   # Le jeu, servi par nginx (le navigateur joint l'API par le port publié sur l'hôte)
   front:
-    image: arrow91/clickfast-front:1.0.0
+    image: arrow91/clickfast-front:1.1.0
     environment:
       API_URL: ${API_URL}
     ports:
@@ -20,7 +20,7 @@ services:
 
   # L'API de scores
   api:
-    image: arrow91/clickfast-api:1.0.0
+    image: arrow91/clickfast-api:1.1.0
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
@@ -39,7 +39,7 @@ services:
 
   # Le service de stats en Python : lit la même base que l'API, en lecture seule
   stats-api:
-    image: arrow91/clickfast-stats-api:1.0.0
+    image: arrow91/clickfast-stats-api:1.1.0
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
