@@ -31,6 +31,12 @@ spec:
                 name: scores-config
             - secretRef:
                 name: scores-secret
+          # À l'arrêt, le pod sort du Service tout de suite, mais Traefik met un instant à l'apprendre :
+          # on attend 10 s avant que Node reçoive SIGTERM, pour ne pas lui envoyer de requête dans le vide
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
           # Readiness : le pod ne reçoit du trafic qu'une fois que Node répond. En échec, il sort du Service
           readinessProbe:
             httpGet:
