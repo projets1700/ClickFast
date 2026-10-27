@@ -95,3 +95,36 @@ jobs:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/clickfast-front:${{ github.sha }}
+
+  # Container scanning : Trivy relit l'image qui vient d'être publiée (nginx, paquets Alpine)
+  security-image:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    outputs:
+      high: ${{ steps.count.outputs.high }}
+      critical: ${{ steps.count.outputs.critical }}
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/clickfast-front:${{ github.sha }}
+    steps:
+      # Action épinglée sur le commit de la v0.36.0, pas sur un tag qu'on peut déplacer
+      - name: Trivy, rapport complet
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: json
+          output: trivy.json
+          exit-code: "0"
+      - name: Comptage HIGH / CRITICAL
+        id: count
+        run: |
+          echo "high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy.json)" >> "$GITHUB_OUTPUT"
+          echo "critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy.json)" >> "$GITHUB_OUTPUT"
+      # Même seuil que npm audit : HIGH et CRITICAL bloquent
+      - name: Trivy, seuil de blocage
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          skip-setup-trivy: true
