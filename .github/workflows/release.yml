@@ -1,8 +1,9 @@
-name: CI
+name: Release
 
+# Push sur main uniquement : c'est le seul chemin qui publie. Une pull request ne déclenche jamais ce fichier
 on:
   push:
-  pull_request:
+    branches: [main]
 
 jobs:
   # Stage 1 : le style du code. S'il casse, rien d'autre ne tourne (fail fast)
@@ -22,6 +23,7 @@ jobs:
   security-deps:
     runs-on: ubuntu-latest
     outputs:
+      audit: ${{ steps.audit.outcome }}
       audit_high: ${{ steps.audit.outputs.high }}
       audit_critical: ${{ steps.audit.outputs.critical }}
       gitleaks: ${{ steps.gitleaks.outcome }}
@@ -66,21 +68,10 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # Stage 3, hors de main : l'image est construite pour vérifier qu'elle se build, jamais publiée
-  build:
-    needs: test
-    if: github.ref != 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Build de l'image du jeu
-        run: docker build . --file Dockerfile --tag clickfast-front:${{ github.sha }}
-
-  # Stage 3, sur main uniquement : on publie. Une pull request ne publie jamais du travail en chantier
+  # Stage 3 : on publie (ce workflow ne tourne que sur main)
   build-and-push:
     # Une dépendance vulnérable ou un secret dans l'historique bloque aussi la publication
     needs: [test, security-deps]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     # Continuous Delivery : le job attend qu'un reviewer de l'environnement clique sur "approve"
     environment: production
     runs-on: ubuntu-latest
@@ -162,7 +153,7 @@ jobs:
     steps:
       - name: Résumé
         env:
-          DEPS: ${{ needs.security-deps.result }}
+          AUDIT: ${{ needs.security-deps.outputs.audit }}
           AUDIT_HIGH: ${{ needs.security-deps.outputs.audit_high }}
           AUDIT_CRITICAL: ${{ needs.security-deps.outputs.audit_critical }}
           GITLEAKS: ${{ needs.security-deps.outputs.gitleaks }}
@@ -175,24 +166,26 @@ jobs:
         run: |
           # Une valeur absente (job sauté, ou planté avant d'écrire) s'affiche "non mesuré", jamais 0
           v() { if [ -n "$1" ]; then echo "$1"; else echo "non mesuré"; fi; }
-          icon() { case "$1" in success) echo "✅";; skipped) echo "⏭️ sauté";; cancelled) echo "⛔ annulé";; *) echo "❌ $1";; esac; }
+          icon() { case "$1" in "") echo "⏭️ non lancé";; success) echo "✅";; skipped) echo "⏭️ sauté";; cancelled) echo "⛔ annulé";; *) echo "❌ $1";; esac; }
           gl() { case "$1" in success) echo "aucun secret";; failure) echo "secret(s) trouvé(s)";; *) echo "non mesuré";; esac; }
           {
             echo "## Sécurité de ce commit"
             echo
             echo "| Contrôle | État | Résultat |"
             echo "| -------- | ---- | -------- |"
-            echo "| Dépendances (npm audit) | $(icon "$DEPS") | high : $(v "$AUDIT_HIGH"), critical : $(v "$AUDIT_CRITICAL") |"
-            echo "| Secrets (gitleaks, tout l'historique) | $(icon "$DEPS") | $(gl "$GITLEAKS") |"
+            echo "| Dépendances (npm audit) | $(icon "$AUDIT") | high : $(v "$AUDIT_HIGH"), critical : $(v "$AUDIT_CRITICAL") |"
+            echo "| Secrets (gitleaks, tout l'historique) | $(icon "$GITLEAKS") | $(gl "$GITLEAKS") |"
             echo "| Publication de l'image | $(icon "$PUSH") | |"
             echo "| Image (Trivy) | $(icon "$IMAGE") | HIGH : $(v "$TRIVY_HIGH"), CRITICAL : $(v "$TRIVY_CRITICAL") |"
             echo "| Inventaire (SBOM Syft) | $(icon "$SBOM") | composants : $(v "$COMPONENTS") |"
             echo
-            if [ "$DEPS" = success ] && [ "$PUSH" = success ] && [ "$IMAGE" = success ] && [ "$SBOM" = success ]; then
+            if [ "$AUDIT" != success ] || [ "$GITLEAKS" != success ]; then
+              echo "**Verdict : ne pas publier en l'état.** Le contrôle des dépendances ou des secrets n'est pas vert."
+            elif [ -z "$PUSH" ] || [ "$PUSH" = skipped ]; then
+              echo "**Verdict : code vérifié, rien n'a été publié** (pull request ou publication sautée)."
+            elif [ "$PUSH" = success ] && [ "$IMAGE" = success ] && [ "$SBOM" = success ]; then
               echo "**Verdict : publiable en confiance.** Tous les contrôles sont passés."
-            elif [ "$PUSH" = skipped ]; then
-              echo "**Verdict : rien n'a été publié** (pas sur main). Seuls les contrôles du code ont tourné."
             else
-              echo "**Verdict : ne pas publier en l'état.** Au moins un contrôle a échoué ou n'a pas pu tourner."
+              echo "**Verdict : ne pas publier en l'état.** Au moins un contrôle de l'image a échoué ou n'a pas pu tourner."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
