@@ -45,13 +45,17 @@ jobs:
           echo "high=$high" >> "$GITHUB_OUTPUT"
           echo "critical=$critical" >> "$GITHUB_OUTPUT"
           npm audit --audit-level=high
-      # Secret scanning sur tout l'historique, même si l'audit a échoué
+      # Secret scanning sur TOUT l'historique, même si l'audit a échoué. Pas gitleaks-action : sur un push,
+      # elle ne relit que les commits poussés, et un secret supprimé deux commits plus tôt lui échappe.
+      # Image épinglée sur son digest ; safe.directory car le dépôt monté n'appartient pas à l'utilisateur du conteneur.
       - name: gitleaks
         id: gitleaks
         if: ${{ !cancelled() }}
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo
+          zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git /repo --redact --no-banner --exit-code 1
 
   # Stage 2 : les tests, seulement si le lint est vert
   test:
