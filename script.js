@@ -3,7 +3,7 @@ const GAME_DURATION_MS = 5000;
 // L'URL vient de config.js, généré au démarrage du conteneur depuis la variable API_URL ;
 // la valeur de repli sert quand on ouvre index.html directement, sans conteneur.
 const API_URL = window.CLICKFAST_CONFIG?.apiUrl || "http://localhost:3000";
-const API_TIMEOUT_MS = 5000;
+const API_TIMEOUT_MS = 5000
 
 const usernameInput = document.getElementById("username");
 const leaderboardList = document.getElementById("leaderboard-list");
