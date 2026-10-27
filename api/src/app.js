@@ -39,9 +39,43 @@ function createApp(pool) {
   app.get("/scores", async (req, res) => {
     await schema();
     const { rows } = await pool.query(
-      "SELECT username, score, created_at FROM scores ORDER BY score DESC, created_at ASC LIMIT 10"
+      "SELECT id, username, score, created_at FROM scores ORDER BY score DESC, created_at ASC LIMIT 10"
     );
     res.json(rows);
+  });
+
+  // Un identifiant de score est un entier positif : tout le reste est refusé avant d'interroger la base
+  function parseId(req, res) {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0 || String(id) !== req.params.id) {
+      res.status(400).json({ error: "Identifiant invalide" });
+      return null;
+    }
+    return id;
+  }
+
+  // Relit un score par son identifiant
+  app.get("/scores/:id", async (req, res) => {
+    const id = parseId(req, res);
+    if (id === null) return;
+    await schema();
+    const { rows } = await pool.query("SELECT id, username, score, created_at FROM scores WHERE id = $1", [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Score introuvable" });
+    }
+    res.json(rows[0]);
+  });
+
+  // Supprime un score
+  app.delete("/scores/:id", async (req, res) => {
+    const id = parseId(req, res);
+    if (id === null) return;
+    await schema();
+    const { rowCount } = await pool.query("DELETE FROM scores WHERE id = $1", [id]);
+    if (rowCount === 0) {
+      return res.status(404).json({ error: "Score introuvable" });
+    }
+    res.status(204).end();
   });
 
   app.use((req, res) => {

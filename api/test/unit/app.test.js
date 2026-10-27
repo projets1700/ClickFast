@@ -52,3 +52,17 @@ describe("API de scores, sans base", () => {
     expect(JSON.stringify(res.body)).not.toContain("ECONNREFUSED");
   });
 });
+
+describe("Identifiant de score, sans base", () => {
+  const { app } = createApp(poolInterdit);
+
+  test.each(["abc", "0", "-3", "1.5", "007"])("GET /scores/%s est refusé en 400", async (id) => {
+    const res = await request(app).get(`/scores/${id}`);
+    expect(res.status).toBe(400);
+  });
+
+  test("DELETE avec un identifiant invalide est refusé en 400", async () => {
+    const res = await request(app).delete("/scores/abc");
+    expect(res.status).toBe(400);
+  });
+});
