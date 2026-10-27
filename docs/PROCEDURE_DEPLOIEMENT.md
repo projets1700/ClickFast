@@ -1,68 +1,63 @@
-# Procédure de déploiement : API de scores ClickFast sur vm-prod
+# Procédure de déploiement : API de scores ClickFast sur le cluster k3d
 
 Pour la personne d'astreinte, qui ne connaît pas le projet. Chaque commande se copie telle quelle. Chaque étape a sa vérification : on ne passe à la suivante que si le résultat attendu s'affiche.
 
+La cible n'est plus une machine (vm-prod, jusqu'au jour 3) : c'est le cluster Kubernetes `clickfast-cluster`. Il relance seul un pod qui meurt. Il ne répare jamais une configuration cassée.
+
 ## 0. Avant de commencer
 
-| Besoin | Où le trouver |
-| ------ | ------------- |
-| Un terminal **Git Bash** sur le poste qui fait tourner `vm-prod` | Menu Démarrer > Git Bash |
+| Besoin | Valeur |
+| ------ | ------ |
+| Un terminal **Git Bash** sur le poste qui fait tourner le cluster | Menu Démarrer > Git Bash |
 | Le dépôt cloné | `cd "/d/Ecole/Methode devops/ClickFast"` (toutes les commandes partent de ce dossier) |
-| La clé privée de déploiement | `deploy/deploy_key` dans ce dossier (jamais dans git) |
-| La machine cible | conteneur `vm-prod` sur ce poste, SSH sur le port **2222**, utilisateur **root** |
-| Les fichiers de prod | sur vm-prod, dans `/srv/clickfast` : `compose.yml`, `.env` (mots de passe), `TAG` (version en cours), `PREVIOUS_TAG` (version d'avant) |
-| Le tableau de bord | Grafana http://localhost:3001, utilisateur `admin`, mot de passe : voir ci-dessous |
-| Prometheus | http://localhost:9090 (page Status > Targets) |
+| Docker Desktop démarré | `docker ps` répond sans erreur |
+| Le cluster | contexte kubectl `k3d-clickfast-cluster`, namespace `clickfast` |
+| L'API | `scores-api` : Deployment de 3 replicas, Service, Ingress `scores.localhost` |
+| La base | `scores-db` : 1 replica, données dans le PVC `scores-db-data` |
+| La configuration | ConfigMap `scores-config`, Secret `scores-secret` (jamais dans git) |
 
-Pour ne pas retaper la connexion SSH à chaque commande, dans le terminal :
+Pour ne jamais viser le mauvais cluster, toutes les commandes passent par cet alias :
 
 ```bash
-vm() { ssh -i deploy/deploy_key -p 2222 -o StrictHostKeyChecking=accept-new root@localhost "$@"; }
+k() { kubectl --context k3d-clickfast-cluster -n clickfast "$@"; }
 ```
 
-Vérification : `vm hostname` affiche un identifiant de conteneur (12 caractères), pas le nom du poste.
-
-Mot de passe Grafana : `vm "grep GRAFANA_ADMIN_PASSWORD /srv/clickfast/.env"`.
+Vérification : `k get nodes` affiche `k3d-clickfast-cluster-server-0   Ready`. Si la commande répond `context was not found`, le cluster n'existe pas sur ce poste : voir les pannes connues.
 
 ## 1. État des lieux (avant toute action)
 
 | Commande | Résultat attendu |
 | -------- | ---------------- |
-| `docker ps --filter name=vm-prod --format '{{.Status}}'` | `Up ...` |
-| `vm "cat /srv/clickfast/TAG"` | le sha de la version en cours (40 caractères) |
-| `vm "cd /srv/clickfast && docker compose ps --format '{{.Name}} {{.Status}}'"` | `scores-api Up ... (healthy)`, `scores-db Up ... (healthy)`, `prometheus Up`, `grafana Up` |
-| `curl -s localhost:3000/health` | `{"status":"ok"}` |
-| Grafana, panneau **Disponibilité** | `UP` |
-
-Noter la version en cours : c'est elle qu'on remettra en cas de retour arrière.
+| `k get pods` | 3 `scores-api-…` en `1/1 Running`, 1 `scores-db-…` en `1/1 Running` |
+| `k get deploy scores-api -o jsonpath='{.spec.template.spec.containers[0].image}'` | `arrow91/clickfast-api:<sha>` : la version en cours, à noter |
+| `k rollout history deploy/scores-api` | la liste des révisions, la dernière en bas |
+| `curl -s -H "Host: scores.localhost" localhost:8080/health` | `{"status":"ok"}` |
+| `curl -s -H "Host: scores.localhost" localhost:8080/scores` | une liste JSON (`[]` si vide), pas un 503 |
 
 ## 2. Déploiement normal : par la pipeline
 
-Un push (ou une fusion de pull request) sur `main` qui touche `api/`, `deploy/` ou `.github/workflows/api.yml` déclenche tout seul le workflow **API de scores** :
+Un push (ou une fusion de pull request) sur `main` qui touche `api/`, `k8s/` ou `.github/workflows/api.yml` lance le workflow **API de scores** :
 
 1. `test` puis `test-integration` (vraie base PostgreSQL jetable).
    Vérification : les deux jobs sont verts dans l'onglet Actions.
-2. `build-and-push` publie `arrow91/clickfast-api:<sha du commit>` sur Docker Hub.
+2. `build-and-push` publie `arrow91/clickfast-api:<sha du commit>`.
    Vérification : le tag apparaît sur https://hub.docker.com/r/arrow91/clickfast-api/tags.
-3. `deploy` tourne sur le runner self-hosted de ce poste : envoi de `compose.yml` et du monitoring, `docker compose pull` puis `up -d --wait`, puis contrôle de `/health`.
-   Vérification : job vert, dernière ligne du log `API en ligne`, et `vm "cat /srv/clickfast/TAG"` affiche le sha du commit poussé.
+3. `deploy`, sur le runner self-hosted de ce poste : `kubectl apply` des manifestes de `k8s/`, avec le tag remplacé par le sha, puis `rollout status` (3 minutes au plus), puis `/health` par l'Ingress.
+   Vérification : job vert, avec `deployment "scores-api" successfully rolled out` dans le log, et l'image du Deployment (étape 1) porte le nouveau sha.
 
-Prérequis : le runner doit tourner (fenêtre `run.cmd` ouverte, voir panne « job deploy en Queued »).
-
-Durée attendue d'un déploiement normal : voir le Journal de bord du README (relevé du premier déploiement). Au-delà de 2 fois cette durée, regarder quel job attend.
+Durée attendue : environ 2 minutes pour tout le run, dont 20 à 25 s de rolling update pour les 3 pods. Sans coupure : les anciens pods servent jusqu'à ce que les nouveaux soient prêts (`maxUnavailable: 0`). Au-delà de 5 minutes, regarder quel job attend (runner arrêté : voir les pannes).
 
 ## 3. Déploiement manuel d'urgence (pipeline en panne)
 
-À faire seulement si GitHub Actions est indisponible. `<SHA>` = un tag qui existe sur Docker Hub.
+`<SHA>` = un tag qui existe sur Docker Hub.
 
-1. Envoyer la config du dépôt :
-   `scp -i deploy/deploy_key -P 2222 -r deploy/compose.yml deploy/monitoring root@localhost:/srv/clickfast/`
-   Vérification : `vm "ls /srv/clickfast"` liste `compose.yml` et `monitoring`.
-2. Télécharger l'image : `vm "cd /srv/clickfast && TAG=<SHA> docker compose pull scores-api"`
-   Vérification : la commande se termine sans `manifest unknown`. Si elle échoue, **s'arrêter là** : rien n'a été touché, l'ancienne version tourne toujours.
-3. Démarrer : `vm "cd /srv/clickfast && TAG=<SHA> docker compose up -d --wait && echo <SHA> > TAG"`
-   Vérification : la commande rend la main sans erreur, puis `curl -s localhost:3000/health` répond `{"status":"ok"}`.
-4. Vérifier que le service rend vraiment service : `curl -s localhost:3000/scores` renvoie une liste JSON (`[]` si vide), pas une erreur 503.
+1. `k set image deploy/scores-api scores-api=arrow91/clickfast-api:<SHA>`
+   Vérification : `deployment.apps/scores-api image updated`.
+2. `k rollout status deploy/scores-api --timeout=180s`
+   Vérification : `successfully rolled out`. S'il expire : `k get pods`. Un pod en `ImagePullBackOff` indique un tag absent de Docker Hub, et il faut alors faire le retour arrière (étape 4). Les anciens pods servent toujours pendant ce temps.
+3. `curl -s -H "Host: scores.localhost" localhost:8080/scores` renvoie une liste JSON.
+
+Si un manifeste de `k8s/` a changé (ConfigMap, Ingress…) : `k apply -f k8s/config.yaml`, puis `k rollout restart deploy/scores-api`. Un pod ne relit sa configuration qu'à son redémarrage.
 
 ## 4. Retour arrière
 
@@ -70,48 +65,49 @@ Durée attendue d'un déploiement normal : voir le Journal de bord du README (re
 
 | Signal observé | Action | Qui décide |
 | -------------- | ------ | ---------- |
-| `/health` ne répond plus après un déploiement, ou panneau Erreurs au-dessus de 5 % pendant plus de 2 minutes | Retour arrière immédiat | La personne d'astreinte, seule |
-| Latence (p95) en hausse, mais le service répond | Surveiller 10 minutes, retour arrière si ça empire | La personne d'astreinte |
-| Signal ambigu | Attendre la validation de l'auteur du projet (contacts plus bas) | L'auteur |
+| Une route renvoie des erreurs ou un champ manque, juste après un déploiement | Retour arrière immédiat | La personne d'astreinte, seule |
+| Nouveau pod bloqué (`ImagePullBackOff`, `CrashLoopBackOff`, `OOMKilled`) et rollout qui n'avance plus | Retour arrière immédiat (le service tient encore, mais plus rien ne peut se déployer) | La personne d'astreinte |
+| Signal ambigu | Attendre la validation de l'auteur du projet | L'auteur |
 
-**Commande** (remet la version notée dans `PREVIOUS_TAG`) :
+**Commande :**
 
 ```bash
-vm 'cd /srv/clickfast && export TAG=$(cat PREVIOUS_TAG) && docker compose pull scores-api && docker compose up -d --wait && echo $TAG > TAG'
+k rollout undo deploy/scores-api && k rollout status deploy/scores-api --timeout=180s
 ```
 
 Vérifications :
-1. `vm "cat /srv/clickfast/TAG"` affiche l'ancien sha.
-2. `curl -s localhost:3000/health` répond `{"status":"ok"}`, et le panneau **Disponibilité** repasse à `UP`.
-3. Le panneau **Erreurs** redescend sous 5 % dans la minute.
+1. `successfully rolled out`.
+2. L'image du Deployment (étape 1) est revenue à l'ancien sha.
+3. `/scores` répond comme avant le déploiement.
 
-Pour revenir à une version précise : remplacer `$(cat PREVIOUS_TAG)` par son sha. Un sha absent de Docker Hub fait échouer le `pull` avec `manifest unknown`, avant que quoi que ce soit ne soit arrêté.
+Durée mesurée : 20 s pour 3 pods, sans coupure.
 
-Attention : le prochain push sur `main` redéploie `main`. Après un retour arrière, la correction (ou un `git revert` du commit fautif) doit passer par une pull request.
+Pour revenir à une révision précise : `k rollout history deploy/scores-api`, puis `k rollout undo deploy/scores-api --to-revision=<N>`.
+
+Attention : le prochain push sur `main` redéploie `main`. Après un retour arrière, la correction (ou un `git revert`) doit passer par une pull request.
 
 ## 5. Pannes connues et leur signature
 
-Toujours commencer par : panneau **Disponibilité**, puis `vm "docker ps -a --format '{{.Names}} {{.Status}}'"`. Un tableau de bord tout vert ne suffit pas à conclure : la liste des conteneurs montre ce qu'aucun panneau ne mesure (un intrus, un conteneur relancé à la main).
+Toujours commencer par `k get pods`, puis `k describe pod <nom>` (section **Events**, tout en bas) pour ce qui empêche un pod de démarrer, et `k logs <nom> --previous` pour ce qui le fait tomber une fois démarré.
 
-| Ce qu'on voit | Cause | Remède |
-| ------------- | ----- | ------ |
-| Disponibilité `DOWN`, `curl localhost:3000/health` échoue, `scores-api` en `Exited` | L'API est arrêtée | `vm "cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --wait"` |
-| Disponibilité `UP`, `/health` répond, mais `/scores` renvoie 503 en 3 s, panneau Erreurs qui monte dès qu'il y a du trafic, `scores-db` en `Exited` | La base est arrêtée | `vm "cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --wait"` (l'API retrouve la base seule) |
-| Disponibilité `DOWN` et `/health` injoignable, **alors que** `scores-api` est `Up (healthy)` | L'API a été sortie de son réseau : son healthcheck interne passe, mais ni Prometheus ni l'hôte ne la joignent. Vérifier : `vm "docker inspect -f '{{json .NetworkSettings.Networks}}' scores-api"` affiche `{}` | `vm "cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --force-recreate --wait scores-api"` |
-| Disponibilité `DOWN`, `scores-api` en `Exited (1)`, `vm "docker logs scores-api"` affiche `Variables d'environnement manquantes` | L'API a été relancée à la main, hors compose, sans son `.env` | `vm "docker rm -f scores-api && cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --wait"` |
-| Conteneurs inconnus `hog-1` à `hog-4` dans `docker ps`, et `vm "docker stats --no-stream --format '{{.Name}} {{.CPUPerc}}'"` montre ~100 % CPU chacun. **Le tableau de bord peut rester normal** : sur ce poste, l'API ne ralentit presque pas (testé : 6 ms en lecture), le p95 ne monte que si la machine a moins de cœurs libres | Des processus qui saturent le CPU de la machine | `vm "docker rm -f hog-1 hog-2 hog-3 hog-4"`, puis `docker stats` : plus aucun conteneur au-dessus de quelques % |
-| `Permission denied (publickey)` | Mauvaise clé, ou clé publique absente de vm-prod | Vérifier `-i deploy/deploy_key`. Côté pipeline : le secret `DEPLOY_SSH_KEY` doit contenir tout le fichier `deploy/deploy_key`, lignes BEGIN et END comprises |
-| `Connection refused` sur le port 2222 | `vm-prod` est arrêtée | `docker start vm-prod`, attendre 10 s, puis l'état des lieux (étape 1) |
-| `port is already allocated` au démarrage de `vm-prod` | Un autre programme du poste occupe 3000, 3001, 9090 ou 2222 (souvent la stack de dev : `docker compose ls`) | Arrêter la stack de dev (`docker compose -f docker-compose.prod.yml down` à la racine du dépôt), puis `docker start vm-prod` |
-| Job `deploy` en `Queued` indéfiniment, sans erreur | Le runner self-hosted ne tourne pas | Relancer `run.cmd` dans le dossier du runner, laisser la fenêtre ouverte |
-| Job `deploy` rouge sur `manifest unknown` | Le tag n'existe pas sur Docker Hub (build-and-push sauté ou échoué) | Rien à réparer en prod, l'ancienne version tourne toujours. Corriger la cause dans la pipeline |
-| Panneau Grafana vide alors que l'API répond | Source de données mal réglée, ou Prometheus arrêté | http://localhost:9090/targets : la cible `scores-api` doit être `UP`. Sinon `vm "cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d prometheus"` |
+| Ce qu'on voit | Cause | Se répare seule ? | Remède |
+| ------------- | ----- | ----------------- | ------ |
+| Un pod en moins quelques secondes, puis un nouveau nom de pod | Pod supprimé | Oui, en ~5 s | Rien, vérifier `k get pods` |
+| `RESTARTS` qui passe à 1, pod `0/1` quelques secondes | Le processus est mort dans le conteneur | Oui, en ~10 s | Rien. Si `RESTARTS` monte en boucle : `k logs <pod> --previous` |
+| Un pod neuf en `ErrImagePull` / `ImagePullBackOff`, Events : `failed to pull … not found` ; les 3 anciens servent toujours | Tag d'image inexistant | Non | `k rollout undo deploy/scores-api` |
+| Un pod neuf en `Error` / `CrashLoopBackOff`, `k logs <pod> --previous` : `Variables d'environnement manquantes : DB_PASSWORD` | Une clé manque dans le Secret `scores-secret` | Non | Remettre la clé (valeur auprès de l'auteur : c'est le mot de passe avec lequel la base a été créée), puis `k rollout restart deploy/scores-api` |
+| Un pod neuf en `OOMKilled` puis `CrashLoopBackOff`, `k describe pod` : `Last State: Terminated, Reason: OOMKilled`, `Limits: memory: 8Mi` | Limite mémoire trop basse (la valeur sûre est 32Mi) | Non | `k rollout undo deploy/scores-api`, ou `k apply` du `k8s/api.yaml` du dépôt |
+| Pods `1/1 Running`, `/health` à 200, mais `/scores` en 503 en 3 s | La base ne répond pas (`k get pods -l app=scores-db`) | Non | `k scale deploy/scores-db --replicas=1`, puis `k rollout status deploy/scores-db` |
+| Pods `Running`, mais tout l'Ingress en 503 immédiat | Le Service ne trouve plus ses pods (selector modifié) : `k get endpointslices -l kubernetes.io/service-name=scores-api` est vide | Non | `k apply -f k8s/api.yaml` |
+| `404 page not found` en texte brut (pas en JSON) | Règle d'Ingress cassée (chemin ou port) : c'est Traefik qui répond, pas l'API | Non | `k apply -f k8s/ingress.yaml` |
+| Job `deploy` en `Queued` sans fin | Le runner self-hosted ne tourne pas | Non | `cd D:\actions-runner; .\run.cmd` dans PowerShell, fenêtre laissée ouverte |
+| `context "k3d-clickfast-cluster" does not exist` ou `connection refused` | Docker Desktop arrêté, ou cluster arrêté | Non | Démarrer Docker Desktop, puis `/c/Users/adama/tools/k3d/k3d.exe cluster start clickfast-cluster` |
 
-Limite connue : `/health` ne vérifie pas la base. L'API peut être `healthy` et `UP` pendant que la base est en panne ; seuls `/scores` et le panneau Erreurs le montrent.
+Limite connue : `/health` ne vérifie pas la base. Les sondes readiness et liveness, bâties dessus, gardent un pod « prêt » pendant que la base est coupée. Seul `/scores` le montre.
 
 ## 6. Après toute intervention
 
-1. Refaire l'état des lieux de l'étape 1 : tout doit être comme avant l'incident.
+1. Refaire l'état des lieux de l'étape 1.
 2. Noter dans le Journal de bord du README : l'heure de début, l'heure du rétablissement, ce qui a été tapé, ce qui a manqué dans ce document.
 3. Corriger ce document dans le même commit que ce qui l'a rendu faux.
 
