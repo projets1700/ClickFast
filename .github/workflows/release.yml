@@ -140,9 +140,10 @@ jobs:
           format: cyclonedx-json
           output-file: sbom.cdx.json
           upload-artifact: false
+      # Syft liste aussi chaque fichier de l'image (type "file") : on ne compte que les paquets
       - name: Comptage des composants
         id: count
-        run: echo "components=$(jq '.components | length' sbom.cdx.json)" >> "$GITHUB_OUTPUT"
+        run: echo "components=$(jq '[.components[] | select(.type != "file")] | length' sbom.cdx.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: sbom-clickfast-front-${{ github.sha }}
@@ -181,7 +182,7 @@ jobs:
             echo "| Secrets (gitleaks, tout l'historique) | $(icon "$GITLEAKS") | $(gl "$GITLEAKS") |"
             echo "| Publication de l'image | $(icon "$PUSH") | |"
             echo "| Image (Trivy) | $(icon "$IMAGE") | HIGH : $(v "$TRIVY_HIGH"), CRITICAL : $(v "$TRIVY_CRITICAL") |"
-            echo "| Inventaire (SBOM Syft) | $(icon "$SBOM") | composants : $(v "$COMPONENTS") |"
+            echo "| Inventaire (SBOM Syft) | $(icon "$SBOM") | paquets : $(v "$COMPONENTS") |"
             echo
             if [ "$AUDIT" != success ] || [ "$GITLEAKS" != success ]; then
               echo "**Verdict : ne pas publier en l'état.** Le contrôle des dépendances ou des secrets n'est pas vert."
