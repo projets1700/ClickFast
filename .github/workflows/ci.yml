@@ -81,6 +81,8 @@ jobs:
     # Une dépendance vulnérable ou un secret dans l'historique bloque aussi la publication
     needs: [test, security-deps]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Continuous Delivery : le job attend qu'un reviewer de l'environnement clique sur "approve"
+    environment: production
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
