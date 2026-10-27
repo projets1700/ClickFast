@@ -1,0 +1,80 @@
+# La base PostgreSQL : ses données vivent dans un PVC, pas dans le conteneur
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scores-db-data
+  namespace: clickfast
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scores-db
+  namespace: clickfast
+spec:
+  # Une base ne se duplique pas comme un service sans état
+  replicas: 1
+  # Recreate : jamais deux Postgres sur le même volume pendant une mise à jour
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: scores-db
+  template:
+    metadata:
+      labels:
+        app: scores-db
+    spec:
+      containers:
+        - name: postgres
+          # La même version qu'en prod sur vm-prod et qu'en CI
+          image: postgres:18.6-alpine
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: scores-secret
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: scores-secret
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: scores-secret
+                  key: DB_PASSWORD
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+          volumeMounts:
+            # Postgres 18 range ses données sous /var/lib/postgresql (et plus .../data).
+            # subPath : un sous-dossier propre, sans le "lost+found" que certains volumes posent à la racine
+            - name: data
+              mountPath: /var/lib/postgresql
+              subPath: pgdata
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: scores-db-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scores-db
+  namespace: clickfast
+spec:
+  selector:
+    app: scores-db
+  ports:
+    - port: 5432
+      targetPort: 5432
