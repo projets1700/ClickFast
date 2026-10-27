@@ -43,6 +43,8 @@ Arrêter : `docker compose down` (le volume `clickfast-pgdata` et donc les score
 
 Si une variable obligatoire manque, l'API refuse de démarrer en la nommant : `docker compose logs api`.
 
+Vérifier que tout répond : `docker compose run --rm smoke`. Ce test de fumée attend que le jeu, l'API et les stats soient `healthy`, interroge chacun, puis sort avec le code 0 (tout va bien) ou 1 (au moins un service ne répond pas).
+
 ### Sans le code source, depuis les images publiées
 
 Les images sont sur Docker Hub : `arrow91/clickfast-front`, `arrow91/clickfast-api`, `arrow91/clickfast-stats-api`, en version `1.1.0` (la `1.0.0` reste disponible pour revenir en arrière). Dans un dossier qui ne contient que `docker-compose.prod.yml` et un `.env` rempli depuis `.env.example` :
@@ -93,6 +95,8 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `docker-compose.yml` | Toute la stack : jeu, API, stats, Postgres, Adminer    |
 | `docker-compose.prod.yml` | La même stack depuis les images publiées sur Docker Hub |
 | `scripts/mesure.sh` | Mesure des images pour le tableau ci-dessous          |
+| `scripts/demarrage.sh` | Temps entre le `up -d` et le 1er 200 de chaque service |
+| `scripts/latence.sh` | Ajoute une latence réseau à la base et mesure l'API et les stats |
 | `script.test.js` | Les tests Jest du jeu                                     |
 | `package.json`  | Les outils de test du jeu (Jest), hors de l'image           |
 | `.github/workflows/` | La pipeline GitHub Actions                             |
@@ -309,6 +313,22 @@ Piège noté en préparant le `.env` : le fichier prod fixe le nom du volume (`c
 Pour aller plus loin :
 - Retour à la normale après `docker compose start db` : base `healthy` en 4,8 s, API de nouveau en 200 en 5,0 s, stats en 5,4 s. Aucun service à relancer, et la partie suivante est enregistrée.
 - Après le `docker kill`, la base est restée `Exited (137)` malgré `restart: unless-stopped`. Un `docker kill` est un arrêt voulu pour Docker, qui ne relance pas le conteneur. Pour un vrai crash (Postgres arrêté brutalement de l'intérieur, `pg_ctl stop -m immediate`), Docker relance le conteneur tout seul (`RestartCount` passe à 1), la base est `healthy` en 6,0 s, l'API répond en 6,2 s, et les données sont intactes après la reprise de Postgres.
+
+Suite, faite après coup :
+- Temps de démarrage depuis les images publiées, mesuré avec `scripts/demarrage.sh` (du `up -d` jusqu'au 1er 200 de chaque service, toutes les 100 ms). À froid, sur une machine sans aucune image du projet (j'ai d'abord supprimé les images ClickFast, celles de mes essais de l'étape 9 et les images de base) : 107 s pour que les trois services répondent, dont environ 86 s de téléchargement. À chaud, images déjà là : de 18,4 à 19,5 s sur 3 essais. Le service répond à peine 0,1 à 0,6 s après le retour du `up -d` : presque tout le temps est pris par Docker Desktop pour créer le network et les conteneurs, pas par les services.
+- Latence artificielle entre la base et le reste, avec `scripts/latence.sh` : `tc qdisc add dev eth0 root netem delay …` lancé dans un conteneur jetable qui partage l'interface réseau de la base (`--net container:clickfast-db-1 --cap-add NET_ADMIN`). L'image de la base n'est pas modifiée. 3 essais par délai :
+
+  | Délai ajouté | POST /scores | GET /scores | GET /stats |
+  | ------------ | ------------ | ----------- | ---------- |
+  | 0 ms | 201 en 0,05 à 0,7 s | 200 en 0,01 s | 200 en 0,02 s |
+  | 200 ms | 201 en 0,8 à 1,9 s | 200 en 0,21 s | 200 en 1,6 s |
+  | 1 000 ms | 503 en 3,0 à 3,3 s | 503 en 3,0 s | 503 en 3,0 s |
+  | 2 000 ms | 503 en 3,0 s | 503 en 3,0 s | 503 en 3,0 s |
+
+  À 200 ms, `GET /scores` ne prend qu'un aller-retour : l'API réutilise une connexion déjà ouverte de son pool. Les stats ouvrent une connexion neuve à chaque appel, et l'ouverture d'une connexion Postgres (TCP, démarrage, authentification) coûte environ 8 allers-retours : 1,6 s. À partir de 1 s de délai, ouvrir une connexion dépasse les 3 s de `connectionTimeoutMillis` (API) et de `connect_timeout` (stats) : tout le monde répond 503 au bout de 3 s, jamais de requête qui pend. Une fois le délai retiré, tout revient à la normale sans rien relancer. Ce que j'en retiens : pour les stats, une connexion par requête coûte cher dès que la base est loin. Un pool de connexions, comme côté API, serait la prochaine amélioration.
+- Un 4e service qui dépend des autres : `smoke`, un test de fumée sur `alpine:3.24.3` qui interroge le jeu, l'API (`/health` et `/scores`) et les stats, puis sort en 0 ou en 1. Il dépend des trois services avec `condition: service_healthy`, ce qui m'a fait ajouter un healthcheck à chacun (`wget` de busybox pour le jeu et l'API, Python pour stats-api, dont l'image slim n'a ni `curl` ni `wget`). Il est dans le profil `test` : un simple `up` ne le lance pas, on le lance avec `docker compose run --rm smoke`. Premier accroc : le healthcheck du jeu sur `http://localhost/` échouait (`Connection refused`). Dans le conteneur, `localhost` vise d'abord l'adresse IPv6 `::1`, et nginx n'écoute qu'en IPv4. Corrigé avec `127.0.0.1`. Résultats : depuis un `up -d`, le smoke test attend que tout soit healthy puis passe en 7,4 s. Base arrêtée : l'API reste `healthy` (son `/health` ne touche pas la base), mais le smoke test échoue sur le 503 de `/scores` et sort en 1. C'est la différence entre « le process tourne » et « le service marche ». Les images ne changent pas, seuls les deux fichiers compose bougent : pas besoin de republier.
+
+Ménage : les scores de test (25 lignes, toutes issues de mes essais) sont supprimés avec `TRUNCATE scores RESTART IDENTITY`, la table reste. Les copies du `.env` et la sauvegarde du volume de l'étape 6, laissées dans des dossiers temporaires, sont supprimées, comme les images de test de l'étape 9.
 
 ### Publication de la version 1.1.0
 
