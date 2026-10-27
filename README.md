@@ -43,7 +43,7 @@ Si une variable obligatoire manque, l'API refuse de démarrer en la nommant : `d
 
 ### Sans le code source, depuis les images publiées
 
-Les images sont sur Docker Hub : `arrow91/clickfast-front`, `arrow91/clickfast-api`, `arrow91/clickfast-stats-api`, en version `1.0.0`. Dans un dossier qui ne contient que `docker-compose.prod.yml` et un `.env` rempli depuis `.env.example` :
+Les images sont sur Docker Hub : `arrow91/clickfast-front`, `arrow91/clickfast-api`, `arrow91/clickfast-stats-api`, en version `1.1.0` (la `1.0.0` reste disponible pour revenir en arrière). Dans un dossier qui ne contient que `docker-compose.prod.yml` et un `.env` rempli depuis `.env.example` :
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d
@@ -293,3 +293,17 @@ Piège noté en préparant le `.env` : le fichier prod fixe le nom du volume (`c
 Pour aller plus loin :
 - Retour à la normale après `docker compose start db` : base `healthy` en 4,8 s, API de nouveau en 200 en 5,0 s, stats en 5,4 s. Aucun service à relancer, et la partie suivante est enregistrée.
 - Après le `docker kill`, la base est restée `Exited (137)` malgré `restart: unless-stopped`. Un `docker kill` est un arrêt voulu pour Docker, qui ne relance pas le conteneur. Pour un vrai crash (Postgres arrêté brutalement de l'intérieur, `pg_ctl stop -m immediate`), Docker relance le conteneur tout seul (`RestartCount` passe à 1), la base est `healthy` en 6,0 s, l'API répond en 6,2 s, et les données sont intactes après la reprise de Postgres.
+
+### Publication de la version 1.1.0
+
+Le test de l'étape 10 a trouvé un bug (faux 503 sur un corps trop gros) qui n'était corrigé que dans le code, et l'optimisation du jeu (étape 9) n'était pas non plus publiée : la prod tournait encore avec les images `1.0.0`. Publication d'une `1.1.0` des trois images, après la même vérification qu'à l'étape 8 (aucun mot de passe ni `ARG`/`ENV` de secret dans `docker history` ni dans les variables des images) :
+
+| Image | Digest | Changement |
+| ----- | ------ | ---------- |
+| `arrow91/clickfast-front:1.1.0` | `sha256:b516357f6362…` | `nginx:1.30.6-alpine-slim`, 20,6 Mo au lieu de 92,8 |
+| `arrow91/clickfast-api:1.1.0` | `sha256:69ce6a66d08a…` | 413 au lieu d'un faux 503 pour un corps trop gros |
+| `arrow91/clickfast-stats-api:1.1.0` | `sha256:d74055a0d15a…` | aucun (même version que le reste de la stack) |
+
+Les trois digests sont vérifiés côté registry avec `docker buildx imagetools inspect`. `docker-compose.prod.yml` passe de `1.0.0` à `1.1.0`, rien d'autre ne change. Les images `1.0.0` restent sur Docker Hub : revenir en arrière, c'est remettre `1.0.0` dans le fichier et relancer, sans rien reconstruire. C'est l'intérêt d'un tag par version plutôt que `latest`.
+
+Test dans le dossier neuf, après suppression des images `arrow91/*` locales : les trois images `1.1.0` sont téléchargées, la stack est `running`, base `healthy`. Corps de 5 ko : 413 `Requête trop volumineuse`. Score de 999 : toujours un 400. Partie jouée avec le `script.js` servi : 42 clics enregistrés, stats à 17 parties pour 16 joueurs, base toujours injoignable depuis l'hôte. Le temps de démarrage n'a pas pu être mesuré : la machine s'est mise en veille pendant le téléchargement.
