@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - "api/**"
+      - "deploy/**"
       - ".github/workflows/api.yml"
   pull_request:
     paths:
@@ -45,3 +46,89 @@ jobs:
           context: api
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/clickfast-api:${{ github.sha }}
+
+  # Déploiement sur vm-prod : ce job tourne CHEZ NOUS (runner self-hosted), seul endroit qui joint la machine
+  deploy:
+    needs: build-and-push
+    # Push sur main uniquement : une branche ou une pull request ne fait jamais tourner de code sur notre machine
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    # Jamais deux déploiements en même temps sur la même machine
+    concurrency: deploy-vm-prod
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      TAG: ${{ github.sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+    steps:
+      # Sur ce poste Windows, "bash" désigne WSL : on place Git Bash (ssh, scp, ssh-agent) en tête du PATH
+      - name: Git Bash pour les étapes suivantes
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\Git\usr\bin"
+
+      - uses: actions/checkout@v7
+
+      - name: Machine d'exécution
+        run: |
+          echo "Runner : $(hostname)"
+          docker ps --format '{{.Names}}' | grep -x vm-prod || { echo "vm-prod ne tourne pas sur ce poste"; exit 1; }
+
+      # La clé privée reste en mémoire dans l'agent SSH : elle n'est jamais écrite sur le disque du runner
+      - name: Agent SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -s)" > /dev/null
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' | ssh-add - 2> /dev/null
+          tmp=$(cygpath -u "$RUNNER_TEMP")
+          # Config SSH du job : l'alias vm-prod porte l'adresse, le port et l'utilisateur venus des secrets.
+          # accept-new : la clé d'hôte est notée à la 1re connexion du job, refusée si elle change ensuite.
+          cat > "$tmp/ssh_config" <<CONF
+          Host vm-prod
+            HostName $DEPLOY_HOST
+            Port $DEPLOY_PORT
+            User $DEPLOY_USER
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile $tmp/known_hosts
+            ConnectTimeout 10
+            BatchMode yes
+          CONF
+          {
+            echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+            echo "SSH_AGENT_PID=$SSH_AGENT_PID"
+            echo "SSH_CONFIG=$tmp/ssh_config"
+          } >> "$GITHUB_ENV"
+
+      - name: Envoi de compose.yml
+        run: scp -F "$SSH_CONFIG" deploy/compose.yml vm-prod:/srv/clickfast/compose.yml
+
+      # pull d'abord : si le tag n'existe pas, on s'arrête là, l'ancienne version tourne toujours
+      - name: Déploiement de ${{ github.sha }}
+        run: |
+          ssh -F "$SSH_CONFIG" vm-prod "
+            set -e
+            cd /srv/clickfast
+            export TAG=$TAG
+            docker compose pull --quiet scores-api
+            docker compose up -d --wait --wait-timeout 90
+            if [ -f TAG ]; then cp TAG PREVIOUS_TAG; fi
+            echo $TAG > TAG
+            docker compose ps --format '{{.Name}} {{.Image}} {{.Status}}'
+          "
+
+      - name: Vérification de /health
+        run: |
+          for _ in $(seq 1 15); do
+            if curl -fsS "http://$DEPLOY_HOST:3000/health"; then echo; echo "API en ligne"; exit 0; fi
+            sleep 2
+          done
+          echo "L'API ne répond pas sur /health après le déploiement"
+          exit 1
+
+      - name: Arrêt de l'agent SSH
+        if: always()
+        run: if [ -n "$SSH_AGENT_PID" ]; then ssh-agent -k > /dev/null; fi
