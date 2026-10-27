@@ -91,7 +91,7 @@ Attention : le prochain push sur `main` redéploie `main`. Après un retour arri
 
 ## 5. Pannes connues et leur signature
 
-Toujours commencer par : panneau **Disponibilité**, puis `vm "docker ps -a --format '{{.Names}} {{.Status}}'"`.
+Toujours commencer par : panneau **Disponibilité**, puis `vm "docker ps -a --format '{{.Names}} {{.Status}}'"`. Un tableau de bord tout vert ne suffit pas à conclure : la liste des conteneurs montre ce qu'aucun panneau ne mesure (un intrus, un conteneur relancé à la main).
 
 | Ce qu'on voit | Cause | Remède |
 | ------------- | ----- | ------ |
@@ -99,7 +99,7 @@ Toujours commencer par : panneau **Disponibilité**, puis `vm "docker ps -a --fo
 | Disponibilité `UP`, `/health` répond, mais `/scores` renvoie 503 en 3 s, panneau Erreurs qui monte dès qu'il y a du trafic, `scores-db` en `Exited` | La base est arrêtée | `vm "cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --wait"` (l'API retrouve la base seule) |
 | Disponibilité `DOWN` et `/health` injoignable, **alors que** `scores-api` est `Up (healthy)` | L'API a été sortie de son réseau : son healthcheck interne passe, mais ni Prometheus ni l'hôte ne la joignent. Vérifier : `vm "docker inspect -f '{{json .NetworkSettings.Networks}}' scores-api"` affiche `{}` | `vm "cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --force-recreate --wait scores-api"` |
 | Disponibilité `DOWN`, `scores-api` en `Exited (1)`, `vm "docker logs scores-api"` affiche `Variables d'environnement manquantes` | L'API a été relancée à la main, hors compose, sans son `.env` | `vm "docker rm -f scores-api && cd /srv/clickfast && TAG=\$(cat TAG) docker compose up -d --wait"` |
-| Latence (p95) qui s'envole, conteneurs `hog-1` à `hog-4` dans `docker ps`, `vm "docker stats --no-stream"` montre ~100 % CPU chacun | Des processus qui saturent le CPU de la machine | `vm "docker rm -f hog-1 hog-2 hog-3 hog-4"`, puis vérifier que le p95 redescend |
+| Conteneurs inconnus `hog-1` à `hog-4` dans `docker ps`, et `vm "docker stats --no-stream --format '{{.Name}} {{.CPUPerc}}'"` montre ~100 % CPU chacun. **Le tableau de bord peut rester normal** : sur ce poste, l'API ne ralentit presque pas (testé : 6 ms en lecture), le p95 ne monte que si la machine a moins de cœurs libres | Des processus qui saturent le CPU de la machine | `vm "docker rm -f hog-1 hog-2 hog-3 hog-4"`, puis `docker stats` : plus aucun conteneur au-dessus de quelques % |
 | `Permission denied (publickey)` | Mauvaise clé, ou clé publique absente de vm-prod | Vérifier `-i deploy/deploy_key`. Côté pipeline : le secret `DEPLOY_SSH_KEY` doit contenir tout le fichier `deploy/deploy_key`, lignes BEGIN et END comprises |
 | `Connection refused` sur le port 2222 | `vm-prod` est arrêtée | `docker start vm-prod`, attendre 10 s, puis l'état des lieux (étape 1) |
 | `port is already allocated` au démarrage de `vm-prod` | Un autre programme du poste occupe 3000, 3001, 9090 ou 2222 (souvent la stack de dev : `docker compose ls`) | Arrêter la stack de dev (`docker compose -f docker-compose.prod.yml down` à la racine du dépôt), puis `docker start vm-prod` |
