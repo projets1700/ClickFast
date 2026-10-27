@@ -29,9 +29,49 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # Tests d'intégration : la vraie API contre un vrai PostgreSQL, jetable, détruit à la fin du job
+  test-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Même version que la prod : un test sur une autre version ne prouve rien pour la prod
+        image: postgres:18.6-alpine
+        env:
+          # Identifiants d'une base de test jetable, qui ne vit que le temps du job : pas des secrets
+          POSTGRES_USER: clickfast_test
+          POSTGRES_PASSWORD: clickfast_test
+          POSTGRES_DB: clickfast_test
+        ports:
+          - 5432:5432
+        # Les tests attendent que Postgres accepte vraiment les connexions, sinon ils échouent au hasard
+        options: >-
+          --health-cmd "pg_isready -U clickfast_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      # Un services: est joignable sur localhost depuis le job (pas par son nom, contrairement à Compose)
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USER: clickfast_test
+      DB_PASSWORD: clickfast_test
+      DB_NAME: clickfast_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+      # Le schéma existe avant le premier test
+      - run: npm run migrate
+      - run: npm run test:integration
+
   # Publication de l'image de l'API, taguée au sha du commit : sur main uniquement
   build-and-push:
-    needs: test
+    # Rien ne part tant que l'API n'a pas prouvé qu'elle marche contre une vraie base
+    needs: [test, test-integration]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
