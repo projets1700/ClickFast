@@ -323,3 +323,13 @@ Le test de l'étape 10 a trouvé un bug (faux 503 sur un corps trop gros) qui n'
 Les trois digests sont vérifiés côté registry avec `docker buildx imagetools inspect`. `docker-compose.prod.yml` passe de `1.0.0` à `1.1.0`, rien d'autre ne change. Les images `1.0.0` restent sur Docker Hub : revenir en arrière, c'est remettre `1.0.0` dans le fichier et relancer, sans rien reconstruire. C'est l'intérêt d'un tag par version plutôt que `latest`.
 
 Test dans le dossier neuf, après suppression des images `arrow91/*` locales : les trois images `1.1.0` sont téléchargées, la stack est `running`, base `healthy`. Corps de 5 ko : 413 `Requête trop volumineuse`. Score de 999 : toujours un 400. Partie jouée avec le `script.js` servi : 42 clics enregistrés, stats à 17 parties pour 16 joueurs, base toujours injoignable depuis l'hôte. Le temps de démarrage n'a pas pu être mesuré : la machine s'est mise en veille pendant le téléchargement.
+
+### Jour 2, phase 0 : la première pipeline verte
+
+Tests Jest sur un faux DOM (jsdom), avec les mêmes `id` que `index.html`. `script.js` lit le DOM dès son chargement : chaque test recrée le faux DOM puis recharge le script avec `jest.resetModules()`, sinon l'état d'une partie (score, chrono) déborde sur le test suivant. Le chrono est testé avec les faux timers de Jest, qui avancent aussi `Date.now()` : 5 secondes de jeu prennent quelques millisecondes de test, et le résultat ne dépend pas de la vitesse de la machine. `fetch` est remplacé par un faux qui renvoie un classement vide : les tests ne dépendent pas de l'API.
+
+7 tests : un clic, plusieurs clics, décompte du chrono, arrêt à 0 avec bouton désactivé, aucun clic compté après la fin, score envoyé à l'API, Rejouer. Pour vérifier qu'ils testent vraiment quelque chose, j'ai faussé le compteur (`count += 2` au lieu de `count++`) : 5 tests sur 7 passent au rouge, puis 7 sur 7 au vert une fois le code remis.
+
+Pour que Jest puisse importer les fonctions, `script.js` les exporte dans un bloc `if (typeof module !== "undefined")`. Le navigateur n'a pas de `module`, il ignore donc ce bloc. L'image ne change pas : `package.json`, `node_modules` et les tests ne sont pas dans la liste blanche du `.dockerignore`.
+
+Pipeline `ci.yml`, déclenchée à chaque push et pull request : un job `test` (`npm ci` puis `npm test`), puis un job `build` relié par `needs: test`, qui construit l'image seulement si les tests sont verts. Premier run vert : 26 s au total, dont 12 s pour `test` (4 s de `npm ci`, 1 s de tests) et 7 s pour `build`.
