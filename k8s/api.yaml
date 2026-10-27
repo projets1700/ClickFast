@@ -6,6 +6,12 @@ metadata:
   namespace: clickfast
 spec:
   replicas: 3
+  # Zéro coupure : un nouveau pod doit être prêt avant qu'un ancien parte (un pod de plus pendant la bascule)
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: scores-api
