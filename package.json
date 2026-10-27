@@ -8,7 +8,12 @@
     "test": "jest"
   },
   "jest": {
-    "testEnvironment": "jsdom"
+    "testEnvironment": "jsdom",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/api/",
+      "<rootDir>/stats-api/"
+    ]
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
