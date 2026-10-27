@@ -156,8 +156,9 @@ jobs:
             export TAG=$TAG
             docker compose pull --quiet scores-api
             docker compose up -d --wait --wait-timeout 90
-            # Prometheus relit sa config sans redémarrer (SIGHUP)
-            docker compose kill -s HUP prometheus
+            # Prometheus relit sa config sans redémarrer (SIGHUP envoyé de l'intérieur : un "docker kill",
+            # même avec HUP, compte comme un arrêt manuel et Prometheus ne repart plus au redémarrage)
+            docker compose exec -T prometheus kill -HUP 1
             if [ -f TAG ]; then cp TAG PREVIOUS_TAG; fi
             echo $TAG > TAG
             docker compose ps --format '{{.Name}} {{.Image}} {{.Status}}'
