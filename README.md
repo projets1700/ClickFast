@@ -698,3 +698,7 @@ Plus aucune commande SSH ni `docker restart`.
 | 20Mi | | ne converge pas | `OOMKilled` dès le démarrage, puis `CrashLoopBackOff` |
 
 20Mi casse, 24Mi tient au repos mais perd des requêtes pendant une mise à jour : ce n'est pas encore la bonne valeur. 28Mi est le plus bas réglage sans aucun échec. Valeur retenue : **32Mi** (requests et limits), soit environ 35 % de marge au-dessus des 23-24Mi mesurés. 28Mi ne laissait que 4Mi pour absorber un pic. CPU : 50m demandés, 500m au plus, pour des pods mesurés à 8-10m.
+
+### Jour 4 : une fausse alerte de gitleaks qui bloquait la publication
+
+Depuis l'ajout de `k8s/api.yaml`, `security-deps` était rouge sur `main` : `leaks found: 1`, sans dire où, car la commande n'avait pas `-v`. Relancé en local avec `-v` : règle `generic-api-key`, fichier `k8s/api.yaml`, ligne `image: arrow91/clickfast-api:<sha>`. Le mot « api » suivi de 40 caractères hexadécimaux ressemble à une clé d'API, mais c'est l'empreinte publique d'un commit. Correction : un `.gitleaks.toml` qui garde toutes les règles par défaut et n'ignore que les tags d'image `clickfast-(api|front):<40 hexa>`, et `-v` dans la pipeline pour qu'une alerte nomme son fichier et sa ligne. 124 commits relus, aucune fuite. Ce rouge m'avait échappé : j'avais annulé les anciens runs en attente sans regarder le résultat du dernier.
