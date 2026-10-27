@@ -92,6 +92,6 @@ describe("ClickFast : compteur de clics et chrono", () => {
     expect(clickButton.disabled).toBe(false);
 
     click(2);
-    expect(scoreEl.textContent).toBe("1");
+    expect(scoreEl.textContent).toBe("2");
   });
 });
