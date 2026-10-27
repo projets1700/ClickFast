@@ -15,6 +15,14 @@ services:
       - clickfast-net
     depends_on:
       - api
+    healthcheck:
+      # 127.0.0.1 et pas localhost : dans le conteneur, localhost vise d'abord ::1, où nginx n'écoute pas
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/config.js"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
     restart: unless-stopped
 
   # L'API de scores
@@ -35,6 +43,14 @@ services:
       # Démarre seulement quand Postgres accepte vraiment les connexions, pas juste quand le conteneur existe
       db:
         condition: service_healthy
+    healthcheck:
+      # wget est fourni par busybox dans l'image Alpine
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
     restart: unless-stopped
 
   # Le service de stats en Python : lit la même base que l'API, en lecture seule
@@ -54,6 +70,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      # L'image slim n'a ni curl ni wget : Python fait la requête
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
     restart: unless-stopped
 
   # La base : aucun "ports", elle n'est joignable que depuis clickfast-net
@@ -93,6 +117,33 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+
+  # Test de fumée, lancé à la demande : docker compose run --rm smoke
+  # Dépend des trois services applicatifs, et n'est lancé que quand tous sont healthy.
+  # Le profil "test" l'écarte d'un simple "up" : il n'a rien à faire en continu.
+  smoke:
+    image: alpine:3.24.3
+    profiles: ["test"]
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        wget -qO- http://front/ | grep -q "ClickFast"
+        wget -qO- http://front/config.js | grep -q "apiUrl"
+        wget -qO- http://api:3000/health | grep -q '"ok"'
+        wget -qO- http://api:3000/scores | grep -q '^\['
+        wget -qO- http://stats-api:8000/stats | grep -q "games_played"
+        echo "Smoke test OK : jeu, API de scores et stats répondent"
+    networks:
+      - clickfast-net
+    depends_on:
+      front:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      stats-api:
+        condition: service_healthy
 
 networks:
   clickfast-net:
