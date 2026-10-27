@@ -1,0 +1,22 @@
+# La machine de production, en maquette : son propre Docker (dind) et un serveur SSH.
+# Build : docker build -f deploy/Dockerfile.vm -t vm-prod deploy
+FROM docker:28.5.2-dind
+
+# openssh-server : le programme qui écoute les connexions SSH entrantes
+RUN apk add --no-cache openssh-server && ssh-keygen -A
+
+# La clé PUBLIQUE du déploiement, la seule qui aura le droit d'entrer
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
+COPY deploy_key.pub /root/.ssh/authorized_keys
+RUN chmod 600 /root/.ssh/authorized_keys
+
+# Connexion par clé uniquement, jamais par mot de passe
+RUN printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin prohibit-password\n' \
+      > /etc/ssh/sshd_config.d/clickfast.conf
+
+# Là où vivent compose.yml, .env et la config du monitoring
+RUN mkdir -p /srv/clickfast
+
+# sshd démarre AVANT le daemon Docker, puis dockerd prend la place du process principal
+RUN printf '#!/bin/sh\n/usr/sbin/sshd\nexec dockerd-entrypoint.sh "$@"\n' > /start.sh && chmod +x /start.sh
+ENTRYPOINT ["/start.sh"]

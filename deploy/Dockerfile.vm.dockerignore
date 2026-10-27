@@ -1,0 +1,3 @@
+# Seule la clé publique entre dans le contexte de build : la privée ne quitte jamais le poste
+*
+!deploy_key.pub
