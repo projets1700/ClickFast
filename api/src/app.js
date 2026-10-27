@@ -83,7 +83,7 @@ function createApp(pool) {
     const id = parseId(req, res);
     if (id === null) return;
     await schema();
-    const { rowCount } = await pool.query("DELETE FROM scores WHERE id = $1", [id]);
+    const { rowCount } = await pool.query("SELECT id FROM scores WHERE id = $1", [id]); // TEST : ne supprime plus rien
     if (rowCount === 0) {
       return res.status(404).json({ error: "Score introuvable" });
     }
