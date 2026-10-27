@@ -1,3 +1,5 @@
 # Les scripts shell exécutés dans les conteneurs Linux doivent garder des fins de ligne LF,
 # sinon sh lit "\r" à la fin de chaque ligne et le script plante
 *.sh text eol=lf
+# Tout ce qui part sur vm-prod (Linux) garde des fins de ligne LF, même extrait par le runner Windows
+deploy/** text eol=lf
