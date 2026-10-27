@@ -78,7 +78,8 @@ jobs:
 
   # Stage 3, sur main uniquement : on publie. Une pull request ne publie jamais du travail en chantier
   build-and-push:
-    needs: test
+    # Une dépendance vulnérable ou un secret dans l'historique bloque aussi la publication
+    needs: [test, security-deps]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
