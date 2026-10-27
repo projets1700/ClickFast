@@ -57,14 +57,33 @@ docker compose -f docker-compose.prod.yml up -d
 
 ## Les tests
 
-Les tests du compteur de clics et du chrono tournent avec Jest, sur un faux DOM (jsdom) :
+Le jeu : ESLint, puis les tests du compteur de clics et du chrono avec Jest, sur un faux DOM (jsdom).
 
 ```bash
 npm ci
+npm run lint
 npm test
 ```
 
-À chaque push et chaque pull request, GitHub Actions relance ces tests, puis construit l'image du jeu seulement s'ils sont verts (`.github/workflows/`). Le badge en haut de cette page montre le résultat du dernier run.
+L'API de scores : tests unitaires sans base, puis tests d'intégration contre un vrai PostgreSQL (variables `DB_*` pointant sur une base jetable).
+
+```bash
+cd api
+npm ci
+npm test                  # unitaires
+npm run migrate           # crée le schéma sur la base DB_*
+npm run test:integration  # intégration
+```
+
+### La pipeline
+
+| Workflow | Déclencheur | Ce qu'il fait |
+| -------- | ----------- | ------------- |
+| `verify.yml` | toute pull request | lint, tests, `npm audit`, gitleaks sur tout l'historique, build de l'image du jeu (jamais publiée), résumé de sécurité |
+| `release.yml` | push sur `main` | la même vérification, puis publication de `arrow91/clickfast-front:<sha>` après validation humaine (environnement `production`), scan Trivy, SBOM CycloneDX, résumé de sécurité |
+| `api.yml` | push ou pull request touchant `api/` ou `deploy/` | tests unitaires et d'intégration ; sur `main` seulement : publication de `arrow91/clickfast-api:<sha>` puis déploiement sur `vm-prod` par le runner self-hosted |
+
+Le badge en haut de cette page montre le résultat du dernier `release.yml` sur `main`.
 
 ### Tester l'application à la main
 
@@ -89,9 +108,30 @@ La stack lancée (`docker compose up -d --build`), voici les vérifications à f
 | -------------- | ------------------------------------------------------------ |
 | `POST /scores` | Enregistre `{ "username": "Adam", "score": 42 }`, renvoie 201 |
 | `GET /scores`  | Renvoie les 10 meilleurs scores                              |
-| `GET /health`  | Renvoie `{ "status": "ok" }`                                 |
+| `GET /scores/:id` | Relit un score par son identifiant, 404 s'il n'existe pas |
+| `DELETE /scores/:id` | Supprime un score, renvoie 204 (404 s'il n'existe pas)   |
+| `GET /health`  | Renvoie `{ "status": "ok" }` (ne vérifie pas la base)         |
+| `GET /metrics` | Mesures au format Prometheus : requêtes par méthode, route et code, durées, parties enregistrées |
 
 Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier entre 0 et 200, ou un JSON cassé donnent un 400 avec le détail. Un corps de plus de 1 ko donne un 413. Base injoignable : 503 avec un message, jamais de stacktrace.
+
+## La production : vm-prod
+
+Une maquette de machine de production : un conteneur avec son propre Docker et un serveur SSH (`deploy/Dockerfile.vm`). Aucun code source dessus, seulement `/srv/clickfast/compose.yml`, son `.env` (copié une fois à la main, jamais dans git) et la config du monitoring.
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "deploy@clickfast" -f deploy/deploy_key   # la privée reste hors de git
+docker build -f deploy/Dockerfile.vm -t vm-prod deploy
+docker run -d --privileged --name vm-prod --restart unless-stopped   -p 2222:22 -p 3000:3000 -p 9090:9090 -p 3001:3001   -v vm-prod-data:/var/lib/docker -v vm-prod-srv:/srv/clickfast vm-prod
+```
+
+| Service | Adresse |
+| ------- | ------- |
+| L'API de scores | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3001 (utilisateur `admin`, mot de passe dans le `.env` de vm-prod) |
+
+Un push sur `main` déploie tout seul. Pour tout le reste (déploiement d'urgence, retour arrière, pannes connues) : [la procédure de déploiement](docs/PROCEDURE_DEPLOIEMENT.md).
 
 ## Le service de stats
 
@@ -118,7 +158,12 @@ Un pseudo vide ou de plus de 30 caractères, un score qui n'est pas un entier en
 | `scripts/latence.sh` | Ajoute une latence réseau à la base et mesure l'API et les stats |
 | `script.test.js` | Les tests Jest du jeu                                     |
 | `package.json`  | Les outils de test du jeu (Jest), hors de l'image           |
-| `.github/workflows/` | La pipeline GitHub Actions                             |
+| `.github/workflows/` | La pipeline GitHub Actions : `verify.yml`, `release.yml`, `api.yml` |
+| `eslint.config.js` | Les règles de style du jeu                                 |
+| `api/test/`     | Tests de l'API : `unit/` sans base, `integration/` contre PostgreSQL |
+| `deploy/`       | La production : `Dockerfile.vm`, `compose.yml`, monitoring (Prometheus, Grafana), `incident.sh` |
+| `docs/PROCEDURE_DEPLOIEMENT.md` | La procédure de déploiement, pour l'astreinte |
+| `scripts/charge-api.sh` | Génère du trafic sur l'API de vm-prod                  |
 
 ## Mesures des images
 
@@ -372,3 +417,125 @@ Tests Jest sur un faux DOM (jsdom), avec les mêmes `id` que `index.html`. `scri
 Pour que Jest puisse importer les fonctions, `script.js` les exporte dans un bloc `if (typeof module !== "undefined")`. Le navigateur n'a pas de `module`, il ignore donc ce bloc. L'image ne change pas : `package.json`, `node_modules` et les tests ne sont pas dans la liste blanche du `.dockerignore`.
 
 Pipeline `ci.yml`, déclenchée à chaque push et pull request : un job `test` (`npm ci` puis `npm test`), puis un job `build` relié par `needs: test`, qui construit l'image seulement si les tests sont verts. Premier run vert : 26 s au total, dont 12 s pour `test` (4 s de `npm ci`, 1 s de tests) et 7 s pour `build`.
+
+### Jour 2, phase 1 : lint puis test
+
+ESLint 10, avec `@eslint/js` (règles recommandées) et `@stylistic/eslint-plugin` pour le point-virgule obligatoire et les guillemets doubles. À sa première exécution, il a trouvé 2 vrais défauts dans `script.js` : en relançant une erreur réseau, le code perdait l'erreur d'origine (règle `preserve-caught-error`). Corrigé avec `{ cause: err }` dans son propre commit, avant d'écrire le workflow. Pipeline en deux jobs reliés par `needs:` : `lint` (12 s), puis `test` (14 s), qui ne démarre qu'après lui. Run de 39 s.
+
+Cas limite et cas adverse (fichier mal stylé qui bloque `test`, branche renommée qui ne déclenche rien) : à faire.
+
+### Jour 2, phase 2 : une image taguée au sha
+
+Job `build-and-push`, sur `main` seulement, après `test`. Connexion par `docker/login-action` avec les secrets `DOCKERHUB_USERNAME` et `DOCKERHUB_TOKEN`, publication par `docker/build-push-action`, tag `${{ github.sha }}`. Hors de `main`, un job `build` construit l'image sans la publier. Premier run : `arrow91/clickfast-front:9a49f4913f9c…` est sur Docker Hub, 5,75 Mo compressés, en 75 s de run. Le jeton Docker Hub est un jeton dédié (Read & Write), pas celui que Docker Desktop génère pour lui-même, qui a aussi le droit Delete.
+
+Cas adverse (secret mal orthographié qui ne fait échouer que `build-and-push`) : à faire.
+
+### Jour 2, phase 3 : mesurer avant d'optimiser
+
+| Run | Durée totale | Job `test` | dont `npm ci` | Image publiée |
+| --- | ------------ | ---------- | ------------- | ------------- |
+| Avant cache (phase 2) | 75 s | 11 s | 5 s | 5,75 Mo compressés |
+| Après cache, 1er run | 67 s | 15 s | 4 s | 5,75 Mo |
+| Après cache, relancé | 54 s | 12 s | 2 s | 5,75 Mo |
+| Après cache, relancé | 58 s | 11 s | 2 s | 5,75 Mo |
+
+Le cache marche : le log dit `Cache hit` et `Cache restored`, 14 Mo. Au 1er run, `lint` a créé le cache et `test`, qui passe juste après, l'a déjà trouvé. Mais l'écart est presque nul. `npm ci` gagne 2 à 3 s, et la restauration du cache en coûte 1 de plus dans `setup-node` : le job `test` reste à 11-12 s. Ce projet n'a que 14 Mo de dépendances de dev. L'écart sur la durée totale vient surtout de `build-and-push` (43 s puis 23 à 29 s), pas du cache npm. Ce n'est donc pas un cache mal configuré, c'est un cache qui n'a presque rien à faire ici.
+
+### Jour 2, phase 4 : npm audit et gitleaks
+
+Job `security-deps`, en parallèle de `lint` et `test` : `npm audit --audit-level=high` (0 vulnérabilité), puis gitleaks. Premier accroc : `gitleaks/gitleaks-action` n'avait relu qu'**1 commit** (`--log-opts=-1` dans le log). Sur un push, l'action ne scanne que les commits poussés : un secret supprimé deux commits plus tôt lui aurait échappé, alors que c'est précisément ce que la phase doit attraper. Remplacée par la CLI gitleaks 8.30.1 (image épinglée sur son digest), qui relit les 87 commits. Aucune fuite trouvée.
+
+Ce qu'on en retient : notre ancien mot de passe de base, `clickfast_pwd` (révoqué au jour 1), apparaît 11 fois dans l'historique, et gitleaks ne le voit pas. Il cherche des formes connues de jetons et des chaînes très aléatoires, pas un mot de passe simple. Un scan vert ne prouve pas qu'il n'y a aucun secret.
+
+La publication attend aussi `security-deps` : une dépendance vulnérable bloque l'image. Cas normal et cas limite (dépendance vieillie, faux secret ajouté puis supprimé) : à faire.
+
+### Jour 2, phases 5 à 7 : Trivy, SBOM, résumé
+
+| Commit | HIGH / CRITICAL (Trivy) | Paquets dans le SBOM |
+| ------ | ----------------------- | -------------------- |
+| `5155ec2` | 0 / 0 | 22 (21 paquets Alpine + le système) |
+
+- Trivy (action épinglée sur le commit de sa v0.36.0, pas sur un tag déplaçable) scanne le tag qui vient d'être publié, et bloque sur HIGH et CRITICAL, le même seuil que `npm audit`.
+- Le SBOM CycloneDX 1.6 de Syft se télécharge depuis l'onglet Actions. Il annonçait 468 composants : 446 sont des fichiers de l'image, et seuls 22 sont des paquets. Le résumé compte maintenant les paquets.
+- Le résumé de sécurité dépend des quatre jobs avec `if: always()`. Une valeur absente (job sauté ou planté) s'affiche « non mesuré », jamais 0. Il a répondu « publiable en confiance » sur `5155ec2`.
+
+Cas limite (vieille image nginx qui doit remonter des CVE) et cas adverse : à faire.
+
+### Jour 2, phase 8 : validation humaine
+
+Environnement `production` avec `projets1700` comme reviewer obligatoire, rattaché à `build-and-push`. Sur `5155ec2`, le job est resté « waiting » de 13:13 à 13:22 UTC (9 minutes), puis a été approuvé par `projets1700`. Ensuite, publication, Trivy, SBOM et résumé ont suivi.
+
+Cas adverse (un second compte, non reviewer, ne voit aucun bouton « approve ») : à faire avec un camarade.
+
+### Jour 2, phase 9 : vérifier ou publier
+
+`verify.yml` sur toute pull request : lint, tests, `security-deps`, build sans publication, résumé. `release.yml` sur un push vers `main` : la chaîne complète jusqu'à la publication protégée. Les jobs communs sont répétés dans les deux fichiers, mais les déclencheurs ne se recouvrent jamais. Le badge pointe sur `release.yml`.
+
+Un vrai rouge sur `main`, juste après ce découpage : le Jest du jeu, lancé à la racine, ramassait aussi les tests de l'API (`api/test/`), dont `supertest` n'est installé que dans `api/`. Résultat : `test` rouge, et `build-and-push`, `security-image` et `sbom` sautés, donc rien de publié. Le fail fast a fait son travail. Correction en un commit : `testPathIgnorePatterns` exclut `api/` et `stats-api/`. Run rouge terminé à 14:25, correction poussée à 14:39 : 14 minutes entre le constat et la correction.
+
+Cas normal, limite et adverse (une PR lance `verify.yml` et jamais `release.yml`, branche `master`) : à faire.
+
+### Jour 2, phase 10 : casser main
+
+À faire : casser un test sur une branche, ouvrir la pull request, la fusionner malgré `verify.yml` rouge, observer `release.yml` échouer sur `main`, puis corriger et rendre `verify.yml` obligatoire dans les règles de la branche `main`.
+
+### Jour 3, phase 1 : la pipeline de l'API
+
+`server.js` découpé : `db.js` (variables obligatoires et pool), `validation.js`, `schema.js`, `app.js` (l'app Express, créée avec son pool, donc testable avec supertest) et `migrate.js`. Workflow `api.yml` : tests sur toute branche, image `arrow91/clickfast-api:<sha>` sur `main` seulement. Premier run sur `main` : `test` (13 s) et `test-integration` (20 s) en parallèle, puis `build-and-push` (25 s). L'image `36ad32f6d03c…` est sur Docker Hub.
+
+### Jour 3, phase 2 : la machine cible
+
+La ligne `deploy/deploy_key` est entrée dans le `.gitignore` dans son propre commit, avant que la clé existe. `Dockerfile.vm` part de `docker:28.5.2-dind`, avec openssh, la seule clé publique autorisée, et la connexion par mot de passe désactivée. Un `.dockerignore` propre à ce Dockerfile ne laisse entrer que `deploy_key.pub` dans le contexte : la clé privée n'est même pas envoyée au build. Premier accroc : `vm-prod` publie le port 3000, déjà pris par la stack de dev, qu'il faut arrêter avant. Le `.env` de production est créé directement sur la machine, avec des mots de passe tirés au hasard sur place : ils ne sont jamais passés par le poste. Connexion SSH avec la clé : un shell dont `docker ps` est vide, aucun conteneur du poste visible.
+
+Cas adverses (connexion sans la clé refusée, redémarrage qui garde les images grâce au volume) : à faire.
+
+### Jour 3, phases 3 et 4 : le runner chez nous, et le job qui déploie
+
+Runner self-hosted `poste-DESKTOP-FP8039E` (agent 2.338.2, empreinte SHA-256 vérifiée). Seul le job `deploy` tourne dessus, et seulement sur un push vers `main`. Premier accroc : sur ce poste, `bash` désigne WSL, pas Git Bash. Le job ajoute donc `C:\Program Files\Git\usr\bin` au `PATH` (ssh, scp, ssh-agent) avant ses étapes. La clé privée passe par `ssh-agent`, en mémoire, sans être écrite sur le disque. Adresse, port et utilisateur viennent des secrets, par un fichier de config SSH temporaire.
+
+Premier déploiement automatique : 6 min 12 s pour le job `deploy`, dont environ 3 min 30 s de téléchargement des images Postgres, Prometheus et Grafana, que vm-prod n'avait jamais vues. À la fin, `{"status":"ok"}` et `scores-api arrow91/clickfast-api:36ad32f… (healthy)`. Run complet de l'API : 9 min 35 s.
+
+Cas limite et adverse (job `Queued` quand le runner est arrêté, branche qui ne déploie pas, secret mal orthographié) : à faire.
+
+### Jour 3, phase 5 : rejouer, et revenir en arrière
+
+À faire, avec la commande de la procédure : un second déploiement identique (la durée de référence d'un déploiement à images déjà présentes), puis une régression volontaire et le retour arrière chronométré. Ce retour se fait avec `PREVIOUS_TAG`, que le job `deploy` écrit à chaque déploiement.
+
+### Jour 3, phase 6 : les tests qui touchent la base
+
+Nouvelles routes `GET` et `DELETE /scores/:id`. Un identifiant qui n'est pas un entier positif est refusé en 400 avant d'interroger la base. Le job `test-integration` lance `postgres:18.6-alpine` en `services:`, avec un `pg_isready` comme contrôle de santé, joue `npm run migrate`, puis 5 tests : enregistrer puis relire par l'id (et vérifier en SQL que c'est vraiment en base), 404 sur un id absent, 400 sur un corps invalide sans rien écrire, suppression qui disparaît du classement, et classement trié et limité à 10. `TRUNCATE` avant chaque test : aucun test ne dépend d'un autre. 5 sur 5 verts. Les tests unitaires (22) tournent avec un faux pool qui échoue s'il est appelé, ce qui prouve qu'ils ne touchent pas la base.
+
+### Jour 3, phase 7 : rendre l'API mesurable
+
+`/metrics` avec prom-client : `http_requests_total` et `http_request_duration_seconds` par méthode, route et code, et `clickfast_scores_recorded_total`, le nombre de parties enregistrées depuis le démarrage. Le label de route est la route déclarée (`/scores/:id`), jamais l'identifiant. Une requête qui ne correspond à aucune route (404, JSON cassé rejeté avant le routage) est rangée sous `route="unmatched"` : comptée, sans créer une série par URL. Testé : 3 appels à `/health` font monter le compteur de 3 exactement, et deux URL inconnues différentes tombent dans la même série.
+
+### Jour 3, phase 8 : Prometheus et Grafana
+
+Ajoutés au `compose.yml` de vm-prod. Prometheus scrape `scores-api:3000` toutes les 5 s. Grafana (port 3001) a sa source de données `http://prometheus:9090` et son tableau de bord, versionnés dans `deploy/monitoring` et envoyés par la pipeline. 4 panneaux pour les golden signals, plus un panneau métier :
+- Disponibilité : `up` ;
+- Trafic : `rate` par route ;
+- Erreurs : part de 5xx ;
+- Latence : p95 ;
+- Parties enregistrées depuis le démarrage.
+
+Le scrape de `/metrics` lui-même est exclu du trafic : sinon le tableau afficherait 0,2 requête par seconde sans aucun joueur.
+
+| Moment | up | Requêtes/s | Taux d'erreur | p95 |
+| ------ | -- | ---------- | ------------- | --- |
+| Au repos, avant la boucle de charge | à relever | | | |
+| Pendant `scripts/charge-api.sh` | à relever | | | |
+| Pendant l'incident de la phase 10 | à relever | | | |
+
+### Jour 3, phase 9 : la procédure
+
+`docs/PROCEDURE_DEPLOIEMENT.md` contient :
+- les accès nécessaires et l'état des lieux ;
+- le déploiement par la pipeline et le déploiement d'urgence à la main, une vérification après chaque étape ;
+- le retour arrière avec sa table de décision ;
+- 12 pannes connues avec leur signature dans le tableau de bord, dont les 5 de `incident.sh` et le piège « l'API est `healthy` mais hors de son réseau ».
+
+La relecture par quelqu'un qui ne connaît pas le projet reste à faire.
+
+### Jour 3, phase 10 : la passation
+
+À faire en binôme : `ssh -i deploy/deploy_key -p 2222 root@localhost 'sh -s' < deploy/incident.sh`. Puis deux entrées (le pilote et les mains) : le panneau le plus utile, la ligne de procédure qui a manqué, et le temps entre la panne et le rétablissement.
