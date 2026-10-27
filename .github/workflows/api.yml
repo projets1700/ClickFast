@@ -131,4 +131,5 @@ jobs:
         run: |
           kubectl --context "$KUBE_CONTEXT" get deployment scores-api -n clickfast -o jsonpath='{.spec.template.spec.containers[0].image}'
           echo
-          curl -fsS -H "Host: scores.localhost" http://localhost:8080/health
+          # Quelques essais : Traefik met un instant à prendre en compte les nouveaux pods
+          curl -fsS --retry 10 --retry-all-errors --retry-delay 2 -H "Host: scores.localhost" http://localhost:8080/health
