@@ -53,8 +53,8 @@ async function callApi(path, options = {}) {
     }
     return data;
   } catch (err) {
-    if (err.name === "AbortError") throw new Error("L'API ne répond pas");
-    if (err instanceof TypeError) throw new Error("API injoignable");
+    if (err.name === "AbortError") throw new Error("L'API ne répond pas", { cause: err });
+    if (err instanceof TypeError) throw new Error("API injoignable", { cause: err });
     throw err;
   } finally {
     clearTimeout(timer);
