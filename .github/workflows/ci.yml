@@ -149,3 +149,47 @@ jobs:
         with:
           name: sbom-clickfast-front-${{ github.sha }}
           path: sbom.cdx.json
+
+  # Résumé de sécurité, lisible dans l'onglet Actions sans ouvrir un seul log
+  security-summary:
+    needs: [security-deps, build-and-push, security-image, sbom]
+    # always() : le résumé s'écrit même si un job a échoué ou a été sauté
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Résumé
+        env:
+          DEPS: ${{ needs.security-deps.result }}
+          AUDIT_HIGH: ${{ needs.security-deps.outputs.audit_high }}
+          AUDIT_CRITICAL: ${{ needs.security-deps.outputs.audit_critical }}
+          GITLEAKS: ${{ needs.security-deps.outputs.gitleaks }}
+          PUSH: ${{ needs.build-and-push.result }}
+          IMAGE: ${{ needs.security-image.result }}
+          TRIVY_HIGH: ${{ needs.security-image.outputs.high }}
+          TRIVY_CRITICAL: ${{ needs.security-image.outputs.critical }}
+          SBOM: ${{ needs.sbom.result }}
+          COMPONENTS: ${{ needs.sbom.outputs.components }}
+        run: |
+          # Une valeur absente (job sauté, ou planté avant d'écrire) s'affiche "non mesuré", jamais 0
+          v() { if [ -n "$1" ]; then echo "$1"; else echo "non mesuré"; fi; }
+          icon() { case "$1" in success) echo "✅";; skipped) echo "⏭️ sauté";; cancelled) echo "⛔ annulé";; *) echo "❌ $1";; esac; }
+          gl() { case "$1" in success) echo "aucun secret";; failure) echo "secret(s) trouvé(s)";; *) echo "non mesuré";; esac; }
+          {
+            echo "## Sécurité de ce commit"
+            echo
+            echo "| Contrôle | État | Résultat |"
+            echo "| -------- | ---- | -------- |"
+            echo "| Dépendances (npm audit) | $(icon "$DEPS") | high : $(v "$AUDIT_HIGH"), critical : $(v "$AUDIT_CRITICAL") |"
+            echo "| Secrets (gitleaks, tout l'historique) | $(icon "$DEPS") | $(gl "$GITLEAKS") |"
+            echo "| Publication de l'image | $(icon "$PUSH") | |"
+            echo "| Image (Trivy) | $(icon "$IMAGE") | HIGH : $(v "$TRIVY_HIGH"), CRITICAL : $(v "$TRIVY_CRITICAL") |"
+            echo "| Inventaire (SBOM Syft) | $(icon "$SBOM") | composants : $(v "$COMPONENTS") |"
+            echo
+            if [ "$DEPS" = success ] && [ "$PUSH" = success ] && [ "$IMAGE" = success ] && [ "$SBOM" = success ]; then
+              echo "**Verdict : publiable en confiance.** Tous les contrôles sont passés."
+            elif [ "$PUSH" = skipped ]; then
+              echo "**Verdict : rien n'a été publié** (pas sur main). Seuls les contrôles du code ont tourné."
+            else
+              echo "**Verdict : ne pas publier en l'état.** Au moins un contrôle a échoué ou n'a pas pu tourner."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
