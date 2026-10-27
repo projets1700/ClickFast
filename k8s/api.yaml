@@ -37,6 +37,15 @@ spec:
             preStop:
               exec:
                 command: ["sleep", "10"]
+          # Requests : ce que le scheduler réserve au placement. Limits : ce que le pod ne dépasse jamais
+          # (au-delà en mémoire, le conteneur est tué : OOMKilled). Valeur trouvée par mesure, voir le Journal.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 64Mi
           # Readiness : le pod ne reçoit du trafic qu'une fois que Node répond. En échec, il sort du Service
           readinessProbe:
             httpGet:
